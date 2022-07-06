@@ -2,7 +2,7 @@ using FishNet.Object;
 using System.Collections;
 using UnityEngine;
 
-namespace FishNet
+namespace gooby.NetworkParticleSystem
 {
 
     /// <summary>

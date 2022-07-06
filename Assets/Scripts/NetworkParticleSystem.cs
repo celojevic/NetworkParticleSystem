@@ -6,7 +6,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using static UnityEngine.ParticleSystem;
 
-namespace FishNet
+namespace gooby.NetworkParticleSystem
 {
     [RequireComponent(typeof(ParticleSystem))]
     public class NetworkParticleSystem : NetworkBehaviour
