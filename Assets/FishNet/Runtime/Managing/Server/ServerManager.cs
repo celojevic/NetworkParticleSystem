@@ -4,6 +4,7 @@ using FishNet.Connection;
 using FishNet.Managing.Debugging;
 using FishNet.Managing.Logging;
 using FishNet.Managing.Transporting;
+using FishNet.Object;
 using FishNet.Serializing;
 using FishNet.Transporting;
 using FishNet.Utility.Extension;
@@ -20,6 +21,7 @@ namespace FishNet.Managing.Server
     /// A container for server data and actions.
     /// </summary>
     [DisallowMultipleComponent]
+    [AddComponentMenu("FishNet/Manager/ServerManager")]
     public sealed partial class ServerManager : MonoBehaviour
     {
         #region Public.
@@ -234,6 +236,17 @@ namespace FishNet.Managing.Server
         {
             return NetworkManager.TransportManager.Transport.StartConnection(true);
         }
+        /// <summary>
+        /// Starts the local server using port.
+        /// </summary>
+        /// <param name="port">Port to start on.</param>
+        /// <returns></returns>
+        public bool StartConnection(ushort port)
+        {
+            Transport t = NetworkManager.TransportManager.Transport;
+            t.SetPort(port);
+            return t.StartConnection(true);
+        }
 
         /// <summary>
         /// Called after the local client connection state changes.
@@ -252,7 +265,22 @@ namespace FishNet.Managing.Server
         private void SceneManager_OnClientLoadedStartScenes(NetworkConnection conn, bool asServer)
         {
             if (asServer)
+            {
                 Objects.RebuildObservers(conn);
+                /* If connection is host then renderers must be hidden
+                 * for all objects not visible to the host. The observer system
+                 * does handle this but only after an initial state is set.
+                 * If the clientHost joins without observation of an object
+                 * then the initial state will never be set. */
+                if (conn.IsLocalClient)
+                {
+                    foreach (NetworkObject nob in Objects.Spawned.Values)
+                    {
+                        if (!nob.Observers.Contains(conn))
+                            nob.SetRenderersVisible(false);
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -289,8 +317,6 @@ namespace FishNet.Managing.Server
             else
                 ClientAuthenticated(conn);
         }
-
-
 
         /// <summary>
         /// Called when a connection state changes for the local server.
@@ -415,6 +441,7 @@ namespace FishNet.Managing.Server
             if (args.ConnectionId < 0)
                 return;
             ArraySegment<byte> segment = args.Data;
+            NetworkManager.StatisticsManager.NetworkTraffic.LocalServerReceivedData((ulong)segment.Count);
             if (segment.Count <= TransportManager.TICK_BYTES)
                 return;
 

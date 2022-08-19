@@ -44,64 +44,6 @@ namespace FishNet.Component.Prediction
             }
         }
 
-        /// <summary>
-        /// Called before performing a reconcile on NetworkBehaviour.
-        /// </summary>
-        private void Rigidbodies_TimeManager_OnPreReconcile(NetworkBehaviour obj)
-        {
-            if (!CanPredict())
-                return;
-
-            bool canReset;
-            bool is2D = (_predictionType == PredictionType.Rigidbody2D);
-            if (_smoothTicks)
-            {
-                canReset = false;
-            }
-            else if (!is2D)
-            {
-                _physicsScene = gameObject.scene.GetPhysicsScene();
-                canReset = (_physicsScene == obj.gameObject.scene.GetPhysicsScene());
-            }
-            else
-            {
-                _physicsScene2D = gameObject.scene.GetPhysicsScene2D();
-                canReset = (_physicsScene2D == obj.gameObject.scene.GetPhysicsScene2D());
-            }
-
-            if (canReset)
-            {
-                SetPreviousTransformProperties();
-                if (!is2D)
-                    ResetRigidbodyToData();
-                else
-                    ResetRigidbody2DToData();
-            }
-        }
-
-
-        /// <summary>
-        /// Called after performing a reconcile on a NetworkBehaviour.
-        /// </summary>
-        private void Rigidbodies_TimeManager_OnPostReconcile(NetworkBehaviour obj)
-        {
-            if (!CanPredict())
-                return;
-
-            bool canCalculate = false;
-            bool is2D = (_predictionType == PredictionType.Rigidbody2D);
-            if (!is2D)
-                canCalculate = (_physicsScene == gameObject.scene.GetPhysicsScene());
-            else if (_predictionType == PredictionType.Rigidbody2D)
-                canCalculate = (_physicsScene2D == gameObject.scene.GetPhysicsScene2D());
-
-            if (canCalculate)
-            {
-                ResetToTransformPreviousProperties();
-                SetTransformMoveRates();
-            }
-        }
-
 
         /// <summary>
         /// Called before physics is simulated when replaying a replicate method.
@@ -114,7 +56,7 @@ namespace FishNet.Component.Prediction
 
             if (_predictionType == PredictionType.Rigidbody)
                 PredictVelocity(ps);
-            else
+            else if (_predictionType == PredictionType.Rigidbody2D)
                 PredictVelocity(ps2d);
         }
 
@@ -235,15 +177,6 @@ namespace FishNet.Component.Prediction
         #endregion
 
         #region Rigidbody.
-        #region Type.
-        public struct RigidbodyState
-        {
-            public Vector3 Position;
-            public Quaternion Rotation;
-            public Vector3 Velocity;
-            public Vector3 AngularVelocity;
-        }
-        #endregion
 
         #region Private.
         /// <summary>
@@ -284,8 +217,13 @@ namespace FishNet.Component.Prediction
             //Update transform and rigidbody.
             _rigidbody.transform.position = _receivedRigidbodyState.Value.Position;
             _rigidbody.transform.rotation = _receivedRigidbodyState.Value.Rotation;
-            _rigidbody.velocity = _receivedRigidbodyState.Value.Velocity;
-            _rigidbody.angularVelocity = _receivedRigidbodyState.Value.AngularVelocity;
+            bool isKinematic = _receivedRigidbodyState.Value.IsKinematic;
+            _rigidbody.isKinematic = isKinematic;
+            if (!isKinematic)
+            {
+                _rigidbody.velocity = _receivedRigidbodyState.Value.Velocity;
+                _rigidbody.angularVelocity = _receivedRigidbodyState.Value.AngularVelocity;
+            }
             //Set prediction defaults.
             _velocityBaseline = null;
             _angularVelocityBaseline = null;
@@ -324,6 +262,7 @@ namespace FishNet.Component.Prediction
             {
                 Position = _rigidbody.transform.position,
                 Rotation = _rigidbody.transform.rotation,
+                IsKinematic = _rigidbody.isKinematic,
                 Velocity = _rigidbody.velocity,
                 AngularVelocity = _rigidbody.angularVelocity
             };
@@ -351,16 +290,6 @@ namespace FishNet.Component.Prediction
         #endregion
 
         #region Rigidbody2D.
-        #region Type.
-        public struct Rigidbody2DState
-        {
-            public Vector3 Position;
-            public Quaternion Rotation;
-            public Vector3 Velocity;
-            public float AngularVelocity;
-        }
-        #endregion
-
         #region Private.
         /// <summary>
         /// Last SpectatorMotorState received from the server. 
@@ -400,8 +329,13 @@ namespace FishNet.Component.Prediction
             //Update transform and rigidbody.
             _rigidbody2d.transform.position = _receivedRigidbody2DState.Value.Position;
             _rigidbody2d.transform.rotation = _receivedRigidbody2DState.Value.Rotation;
-            _rigidbody2d.velocity = _receivedRigidbody2DState.Value.Velocity;
-            _rigidbody2d.angularVelocity = _receivedRigidbody2DState.Value.AngularVelocity;
+            bool simulated = _receivedRigidbody2DState.Value.Simulated;
+            _rigidbody2d.simulated = simulated;
+            if (!simulated)
+            {
+                _rigidbody2d.velocity = _receivedRigidbody2DState.Value.Velocity;
+                _rigidbody2d.angularVelocity = _receivedRigidbody2DState.Value.AngularVelocity;
+            }
             //Set prediction defaults.
             _velocityBaseline2D = null;
             _angularVelocityBaseline2D = null;
@@ -441,6 +375,7 @@ namespace FishNet.Component.Prediction
             {
                 Position = _rigidbody2d.transform.position,
                 Rotation = _rigidbody2d.transform.rotation,
+                Simulated = _rigidbody2d.simulated,
                 Velocity = _rigidbody2d.velocity,
                 AngularVelocity = _rigidbody2d.angularVelocity
             };

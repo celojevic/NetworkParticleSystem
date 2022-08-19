@@ -10,6 +10,7 @@ using UnityEngine;
 
 namespace FishNet.Transporting.Multipass
 {
+    [AddComponentMenu("FishNet/Transport/Multipass")]
     public class Multipass : Transport
     {
         #region Types.
@@ -503,7 +504,7 @@ namespace FishNet.Transporting.Multipass
         }
 
         /// <summary>
-        /// Sets the client transport to the first of type T.
+        /// Sets the client transport to the first of type.
         /// </summary>
         /// <typeparam name="T"></typeparam>
         public void SetClientTransport<T>()
@@ -512,6 +513,25 @@ namespace FishNet.Transporting.Multipass
             for (int i = 0; i < _transports.Count; i++)
             {
                 if (_transports[i].GetType() == typeof(T))
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            SetClientTransport(index);
+        }
+
+        /// <summary>
+        /// Sets the client transport to the first of type T.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        public void SetClientTransport(Type type)
+        {
+            int index = -1;
+            for (int i = 0; i < _transports.Count; i++)
+            {
+                if (_transports[i].GetType() == type)
                 {
                     index = i;
                     break;

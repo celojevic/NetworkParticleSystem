@@ -845,10 +845,10 @@ namespace FishNet.Serializing
             }
             else
             {
-                if (componentIndex < 0 || componentIndex >= nob.NetworkBehaviours.Length)
+                if (componentIndex >= nob.NetworkBehaviours.Length)
                 {
                     if (NetworkManager.CanLog(LoggingType.Error))
-                        Debug.LogError($"ComponentIndex of {componentIndex} is out of bounds on {nob.gameObject.name} [id {nob.ObjectId}] . This may occur if you have modified your gameObject/prefab without saving it, or the scene.");
+                        Debug.LogError($"ComponentIndex of {componentIndex} is out of bounds on {nob.gameObject.name} [id {nob.ObjectId}]. This may occur if you have modified your gameObject/prefab without saving it, or the scene.");
                     result = null;
                 }
                 else
@@ -872,7 +872,6 @@ namespace FishNet.Serializing
         {
             return ReadNetworkBehaviour(out _, out _);
         }
-
 
         /// <summary>
         /// Writes a transport channel.
@@ -925,10 +924,23 @@ namespace FishNet.Serializing
                 //Prefer server.
                 if (NetworkManager.IsServer)
                 {
-                    if (NetworkManager.ServerManager.Clients.TryGetValueIL2CPP((int)value, out NetworkConnection result))
+                    NetworkConnection result;
+                    if (NetworkManager.ServerManager.Clients.TryGetValueIL2CPP(value, out result))
                     {
                         return result;
                     }
+                    //If also client then try client side data.
+                    else if (NetworkManager.IsClient)
+                    {
+                        //If found in client collection then return.
+                        if (NetworkManager.ClientManager.Clients.TryGetValueIL2CPP(value, out result))
+                            return result;
+                        //Otherwise make a new instance.
+                        else
+                            return new NetworkConnection(NetworkManager, value);
+
+                    }
+                    //Only server and not found.
                     else
                     {
                         if (NetworkManager.CanLog(LoggingType.Warning))
@@ -942,9 +954,12 @@ namespace FishNet.Serializing
                     //If value is self then return self.
                     if (value == NetworkManager.ClientManager.Connection.ClientId)
                         return NetworkManager.ClientManager.Connection;
+                    //Try client side dictionary.
+                    else if (NetworkManager.ClientManager.Clients.TryGetValueIL2CPP(value, out NetworkConnection result))
+                        return result;
                     //Otherwise return a new connection.
                     else
-                        return new NetworkConnection(NetworkManager, (int)value);
+                        return new NetworkConnection(NetworkManager, value); //todo make and use NC cache.
                 }
 
             }

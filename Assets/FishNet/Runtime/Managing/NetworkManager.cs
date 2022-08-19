@@ -20,6 +20,7 @@ using FishNet.Managing.Debugging;
 using FishNet.Managing.Object;
 using FishNet.Transporting;
 using FishNet.Utility.Extension;
+using FishNet.Managing.Statistic;
 #if UNITY_EDITOR
 using FishNet.Editing.PrefabCollectionGenerator;
 #endif
@@ -31,6 +32,7 @@ namespace FishNet.Managing
     /// </summary>
     [DefaultExecutionOrder(short.MinValue)]
     [DisallowMultipleComponent]
+    [AddComponentMenu("FishNet/Manager/NetworkManager")]
     public sealed partial class NetworkManager : MonoBehaviour
     {
         #region Types.
@@ -152,6 +154,10 @@ namespace FishNet.Managing
         /// </summary>
         public DebugManager DebugManager { get; private set; }
         /// <summary>
+        /// StatisticsManager for this NetworkManager.
+        /// </summary>
+        public StatisticsManager StatisticsManager { get; private set; }
+        /// <summary>
         /// An empty connection reference. Used when a connection cannot be found to prevent object creation.
         /// </summary>
         [APIExclude]
@@ -203,7 +209,7 @@ namespace FishNet.Managing
         /// <summary>
         /// Maximum framerate allowed.
         /// </summary>
-        internal const ushort MAXIMUM_FRAMERATE = 9999;
+        internal const ushort MAXIMUM_FRAMERATE = 500;
         #endregion
 
 
@@ -216,6 +222,7 @@ namespace FishNet.Managing
             if (StartingRpcLinkIndex == 0)
                 StartingRpcLinkIndex = (ushort)(EnumFN.GetHighestValue<PacketId>() + 1);
 
+            bool isDefaultPrefabs = (SpawnablePrefabs != null && SpawnablePrefabs is DefaultPrefabObjects);
 #if UNITY_EDITOR
             /* If first instance then force
              * default prefabs to repopulate.
@@ -223,17 +230,24 @@ namespace FishNet.Managing
              * cloning tools sometimes don't synchronize
              * scriptable object changes, which is what
              * the default prefabs is. */
-            if (_instances.Count == 0 && SpawnablePrefabs != null && SpawnablePrefabs is DefaultPrefabObjects dpo)
+            if (_refreshDefaultPrefabs && _instances.Count == 0 && isDefaultPrefabs)
             {
-                if (_refreshDefaultPrefabs)
-                {
-                    Generator.IgnorePostProcess = true;
-                    Debug.Log("DefaultPrefabCollection is being refreshed.");
-                    Generator.GenerateFull();
-                    Generator.IgnorePostProcess = false;
-                }
+                Generator.IgnorePostProcess = true;
+                Debug.Log("DefaultPrefabCollection is being refreshed.");
+                Generator.GenerateFull();
+                Generator.IgnorePostProcess = false;
             }
 #endif
+            //If default prefabs then also make a new instance and sort them.
+            if (isDefaultPrefabs)
+            {
+                DefaultPrefabObjects originalDpo = (DefaultPrefabObjects)SpawnablePrefabs;
+                //If not editor then a new instance must be made and sorted.
+                DefaultPrefabObjects instancedDpo = ScriptableObject.CreateInstance<DefaultPrefabObjects>();
+                instancedDpo.AddObjects(originalDpo.Prefabs.ToList(), false);
+                instancedDpo.Sort();
+                SpawnablePrefabs = instancedDpo;
+            }
 
             _canPersist = CanInitialize();
             if (!_canPersist)
@@ -255,6 +269,7 @@ namespace FishNet.Managing
             AddSceneManager();
             AddObserverManager();
             AddRollbackManager();
+            AddStatisticsManager();
             InitializeComponents();
 
             _instances.Add(this);
@@ -282,7 +297,9 @@ namespace FishNet.Managing
             TransportManager.InitializeOnceInternal(this);
             ServerManager.InitializeOnceInternal(this);
             ClientManager.InitializeOnceInternal(this);
+            ObserverManager.InitializeOnceInternal(this);
             RollbackManager.InitializeOnceInternal(this);
+            StatisticsManager.InitializeOnceInternal(this);
         }
 
         /// <summary>
@@ -302,14 +319,15 @@ namespace FishNet.Managing
             else if (serverStarted)
                 frameRate = ServerManager.FrameRate;
 
-            /* Make sure framerate isn't set to 9999 on server.
+            /* Make sure framerate isn't set to max on server.
              * If it is then default to tick rate. If framerate is
              * less than tickrate then also set to tickrate. */
 #if UNITY_SERVER
+            ushort minimumServerFramerate = (ushort)(TimeManager.TickRate + 1);
             if (frameRate == MAXIMUM_FRAMERATE)
-                frameRate = TimeManager.TickRate;
+                frameRate = minimumServerFramerate;
             else if (frameRate < TimeManager.TickRate)
-                frameRate = TimeManager.TickRate;
+                frameRate = minimumServerFramerate;
 #endif
             //If there is a framerate to set.
             if (frameRate > 0)
@@ -469,6 +487,16 @@ namespace FishNet.Managing
                 ObserverManager = gameObject.AddComponent<ObserverManager>();
         }
 
+        /// <summary>
+        /// Adds StatisticsManager
+        /// </summary>
+        private void AddStatisticsManager()
+        {
+            if (gameObject.TryGetComponent<StatisticsManager>(out StatisticsManager result))
+                StatisticsManager = result;
+            else
+                StatisticsManager = gameObject.AddComponent<StatisticsManager>();
+        }
 
         /// <summary>
         /// Adds and assigns NetworkServer and NetworkClient if they are not already setup.
