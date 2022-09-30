@@ -6,6 +6,9 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/NetworkParticleSystem/Scenes/NPS_SceneParticles_Example.unity
+    guid: 8ea9011b6726e1d4b800009729ccd69d
+  - enabled: 1
     path: Assets/NetworkParticleSystem/Scenes/NPS_SyncSeed_Example.unity
     guid: 51c02e06622be9f4daefb9c4dcf04971
   - enabled: 1

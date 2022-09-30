@@ -12,6 +12,7 @@ using FishNet.Managing.Server;
 using FishNet.Managing.Timing;
 using FishNet.Managing.Transporting;
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace FishNet.Object
@@ -82,6 +83,10 @@ namespace FishNet.Object
         /// </summary>
         public bool IsOffline => _networkObjectCache.IsOffline;
         /// <summary>
+        /// Observers for this NetworkBehaviour.
+        /// </summary>
+        public HashSet<NetworkConnection> Observers => _networkObjectCache.Observers;
+        /// <summary>
         /// True if the local client is the owner of this object.
         /// </summary>
 #if UNITY_2020_3_OR_NEWER
@@ -130,11 +135,11 @@ namespace FishNet.Object
         /// <summary>
         /// Despawns this _networkObjectCache. Can only be called on the server.
         /// </summary>
-        /// <param name="disableOnDespawnOverride">Overrides the default DisableOnDespawn value for this single despawn. Scene objects will never be destroyed.</param>
-        public void Despawn(bool? disableOnDespawnOverride = null)
+        /// <param name="cacheOnDespawnOverride">Overrides the default DisableOnDespawn value for this single despawn. Scene objects will never be destroyed.</param>
+        public void Despawn(DespawnType? despawnType = null)
         {
             if (!IsNetworkObjectNull(true))
-                _networkObjectCache.Despawn(disableOnDespawnOverride);
+                _networkObjectCache.Despawn(despawnType);
         }
         /// <summary>
         /// Spawns an object over the network. Can only be called on the server.
@@ -146,6 +151,17 @@ namespace FishNet.Object
             if (IsNetworkObjectNull(true))
                 return;
             _networkObjectCache.Spawn(go, ownerConnection);
+        }
+        /// <summary>
+        /// Spawns an object over the network. Can only be called on the server.
+        /// </summary>
+        /// <param name="nob">GameObject instance to spawn.</param>
+        /// <param name="ownerConnection">Connection to give ownership to.</param>
+        public void Spawn(NetworkObject nob, NetworkConnection ownerConnection = null)
+        {
+            if (IsNetworkObjectNull(true))
+                return;
+            _networkObjectCache.Spawn(nob, ownerConnection);
         }
         /// <summary>
         /// Returns if NetworkObject is null.

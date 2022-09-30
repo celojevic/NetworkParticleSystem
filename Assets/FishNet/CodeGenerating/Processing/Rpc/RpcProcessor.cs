@@ -59,6 +59,8 @@ namespace FishNet.CodeGenerating.Processing.Rpc
         private const string RUNLOCALLY_NAME = "RunLocally";
         private const string INCLUDEOWNER_NAME = "IncludeOwner";
         private const string BUFFERLAST_NAME = "BufferLast";
+        private const string DATALENGTH_NAME = "DataLength";
+        private const string VALIDATETARGET_NAME = "ValidateTarget";
         #endregion
 
         internal bool Process(TypeDefinition typeDef, ref uint rpcCount)
@@ -350,10 +352,19 @@ namespace FishNet.CodeGenerating.Processing.Rpc
              * or if (!base.isClient) */
             
                 CreateClientRpcConditionsForServer(writerMd);
-
+           
             VariableDefinition channelVariableDef = CreateAndPopulateChannelVariable(writerMd, channelParameterDef);
-            //Create a local PooledWriter variable.
-            VariableDefinition pooledWriterVariableDef = CodegenSession.WriterHelper.CreatePooledWriter(writerMd);
+            /* Create a local PooledWriter variable. */
+            //Default value for data lenght.
+            int dataLength = -1;
+            //Go through each attribute and see if a larger data length is specified.
+            foreach (AttributeData ad in attributeDatas)
+            {
+                int dl = ad.Attribute.GetField(DATALENGTH_NAME, -1);
+                if (dl > dataLength)
+                    dataLength = dl;
+            }
+            VariableDefinition pooledWriterVariableDef = CodegenSession.WriterHelper.CreatePooledWriter(writerMd, dataLength);
             //Create all writer.WriteType() calls. 
             for (int i = 0; i < serializedParameters.Count; i++)
             {
@@ -368,7 +379,7 @@ namespace FishNet.CodeGenerating.Processing.Rpc
             if (cr.RpcType == RpcType.Observers)
                 processor.Add(CreateSendObserversRpc(writerMd, cr.MethodHash, pooledWriterVariableDef, channelVariableDef, cr.Attribute));
             else if (cr.RpcType == RpcType.Target)
-                processor.Add(CreateSendTargetRpc(writerMd, cr.MethodHash, pooledWriterVariableDef, channelVariableDef, targetConnectionParameterDef));
+                processor.Add(CreateSendTargetRpc(writerMd, cr.MethodHash, pooledWriterVariableDef, channelVariableDef, targetConnectionParameterDef, attributeDatas));
             //Dispose of writer.
             processor.Add(CodegenSession.WriterHelper.DisposePooledWriter(writerMd, pooledWriterVariableDef));
             //Add end of method.
@@ -397,10 +408,11 @@ namespace FishNet.CodeGenerating.Processing.Rpc
              * or if (!base.isClient) */
             
                 CreateServerRpcConditionsForClient(writerMd, cr.Attribute);
-
+            
             VariableDefinition channelVariableDef = CreateAndPopulateChannelVariable(writerMd, channelParameterDef);
             //Create a local PooledWriter variable.
-            VariableDefinition pooledWriterVariableDef = CodegenSession.WriterHelper.CreatePooledWriter(writerMd);
+            int dataLength = cr.Attribute.GetField(DATALENGTH_NAME, -1);
+            VariableDefinition pooledWriterVariableDef = CodegenSession.WriterHelper.CreatePooledWriter(writerMd, dataLength);
             //Create all writer.WriteType() calls. 
             for (int i = 0; i < serializedParameters.Count; i++)
             {
@@ -513,6 +525,7 @@ namespace FishNet.CodeGenerating.Processing.Rpc
             //Add connection parameter to the read method. Internals pass the connection into this.
             ParameterDefinition channelParameterDef = GetOrCreateChannelParameter(createdMd, RpcType.Server);
             ParameterDefinition connectionParameterDef = GetOrCreateNetworkConnectionParameter(createdMd);
+
             /* It's very important to read everything
              * from the PooledReader before applying any
              * exit logic. Should the method return before
@@ -780,7 +793,6 @@ namespace FishNet.CodeGenerating.Processing.Rpc
             * packet will be malformed due to invalid index. */
             readVariableDefs = new VariableDefinition[serializedParameters.Count];
             allReadInsts = new List<Instruction>();
-            ILProcessor processor = methodDef.Body.GetILProcessor();
 
             //True if last parameter is a connection and a server rpc.
             for (int i = 0; i < serializedParameters.Count; i++)
@@ -1017,14 +1029,20 @@ namespace FishNet.CodeGenerating.Processing.Rpc
         /// <summary>
         /// Creates a call to SendTargetRpc on NetworkBehaviour.
         /// </summary>
-        private List<Instruction> CreateSendTargetRpc(MethodDefinition methodDef, uint methodHash, VariableDefinition writerVariableDef, VariableDefinition channelVariableDef, ParameterDefinition targetConnectionParameterDef)
+        private List<Instruction> CreateSendTargetRpc(MethodDefinition methodDef, uint methodHash, VariableDefinition writerVariableDef, VariableDefinition channelVariableDef, ParameterDefinition targetConnectionParameterDef, List<AttributeData> attributeDatas)
         {
             List<Instruction> insts = new List<Instruction>();
             ILProcessor processor = methodDef.Body.GetILProcessor();
 
+            CustomAttribute rpcAttribute = attributeDatas.GetAttribute(RpcType.Target);
+            bool validateTarget = rpcAttribute.GetField(VALIDATETARGET_NAME, true);
+            int validate = (validateTarget) ? 1 : 0;
+
             insts.AddRange(CreateSendRpcCommon(processor, methodHash, writerVariableDef, channelVariableDef));
             //Reference to NetworkConnection that RPC is going to.
             insts.Add(processor.Create(OpCodes.Ldarg, targetConnectionParameterDef));
+            //Validate target receiving the rpc.
+            insts.Add(processor.Create(OpCodes.Ldc_I4, validate));
             //Call NetworkBehaviour.
             insts.Add(processor.Create(OpCodes.Call, CodegenSession.NetworkBehaviourHelper.SendTargetRpc_MethodRef));
 

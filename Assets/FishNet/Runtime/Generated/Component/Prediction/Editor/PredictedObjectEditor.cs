@@ -8,7 +8,7 @@ namespace FishNet.Component.Prediction
 
     [CustomEditor(typeof(PredictedObject), true)]
     [CanEditMultipleObjects]
-    public class PredictionObjectEditor : Editor
+    public class PredictedObjectEditor : Editor
     {
         private SerializedProperty _graphicalObject;
         private SerializedProperty _smoothTicks;

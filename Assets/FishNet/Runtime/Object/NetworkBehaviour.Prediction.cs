@@ -28,11 +28,34 @@ namespace FishNet.Object
         public uint GetLastReconcileTick() => _lastReconcileTick;
         /// <summary>
         /// Sets the last tick this NetworkBehaviour reconciled with.
+        /// For internal use only.
         /// </summary>
         [CodegenMakePublic] //Internal only.
         protected internal void SetLastReconcileTick(uint value)
         {
             _lastReconcileTick = value;
+            //Also set on the timemanager.
+            TimeManager.LastReconcileTick = value;
+        }
+        /// <summary>
+        /// 
+        /// </summary>
+        private uint _lastReplicateTick;
+        /// <summary>
+        /// Gets the last tick this NetworkBehaviour replicated with.
+        /// </summary>
+        public uint GetLastReplicateTick() => _lastReplicateTick;
+        /// <summary>
+        /// Sets the last tick this NetworkBehaviour replicated with.
+        /// For internal use only.
+        /// </summary>
+        [CodegenMakePublic] //Make public.
+        protected internal void SetLastReplicateTickInternal(uint value)
+        {
+            Owner.LocalReplicateTick = TimeManager.LocalTick;
+            _lastReplicateTick = value;
+            //Also set on the timemanager.
+            TimeManager.LastReplicateTick = value;
         }
         /// <summary>
         /// True if this object is reconciling.
@@ -155,6 +178,14 @@ namespace FishNet.Object
         /// <param name="asServer">True to reset values for server, false to reset values for client.</param>
         public void ClearReplicateCache(bool asServer) { InternalClearReplicateCache(asServer); }
         /// <summary>
+        /// Clears cached replicates for server and client. This can be useful to call on server and client after teleporting.
+        /// </summary>
+        public void ClearReplicateCache()
+        {
+            InternalClearReplicateCache(true);
+            InternalClearReplicateCache(false);
+        }
+        /// <summary>
         /// Clears cached replicates.
         /// For internal use only.
         /// </summary>
@@ -185,7 +216,7 @@ namespace FishNet.Object
 
             Channel channel = Channel.Unreliable;
             //Write history to methodWriter.
-            PooledWriter methodWriter = WriterPool.GetWriter();
+            PooledWriter methodWriter = WriterPool.GetWriter(WriterPool.LENGTH_BRACKET);
             methodWriter.WriteList(replicateBuffer, offset);
 
             PooledWriter writer;
@@ -195,8 +226,8 @@ namespace FishNet.Object
             writer = CreateRpc(hash, methodWriter, PacketId.Replicate, channel);
             NetworkManager.TransportManager.SendToServer((byte)channel, writer.GetArraySegment(), false);
 
-            methodWriter.Dispose();
-            writer.Dispose();
+            methodWriter.DisposeLength();
+            writer.DisposeLength();
         }
 
         /// <summary>

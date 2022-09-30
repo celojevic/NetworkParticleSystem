@@ -2,6 +2,7 @@
 using FishNet.Documenting;
 using FishNet.Managing.Logging;
 using FishNet.Managing.Object;
+using FishNet.Managing.Server;
 using FishNet.Managing.Utility;
 using FishNet.Object;
 using FishNet.Serializing;
@@ -67,7 +68,18 @@ namespace FishNet.Managing.Client
             if (args.ConnectionState != LocalConnectionState.Started)
             {
                 _objectCache.Reset();
-                base.DespawnSpawnedWithoutSynchronization(false);
+
+                //If not server then deinitialize normally.
+                if (!base.NetworkManager.IsServer)
+                {
+                    base.DespawnSpawnedWithoutSynchronization(false);
+                }
+                //Otherwise invoke stop callbacks only for client side.
+                else
+                {                    
+                    foreach (NetworkObject n in Spawned.Values)
+                        n.InvokeStopCallbacks(false);
+                }
                 /* Clear spawned and scene objects as they will be rebuilt.
                  * Spawned would have already be cleared if DespawnSpawned
                  * was called but it won't hurt anything clearing an empty collection. */
@@ -242,10 +254,10 @@ namespace FishNet.Managing.Client
         {
             int objectId = reader.ReadNetworkObjectId();
             int ownerId = reader.ReadNetworkConnectionId();
-            ObjectSpawnType ost = (ObjectSpawnType)reader.ReadByte();
+            SpawnType st = (SpawnType)reader.ReadByte();
             byte componentIndex = reader.ReadByte();
             bool nested = (componentIndex > 0);
-            bool sceneObject = (ost == ObjectSpawnType.Scene);
+            bool sceneObject = (st == SpawnType.Scene);
             int rootObjectId = (nested) ? reader.ReadNetworkObjectId() : -1;
 
             int? parentObjectId = null;
@@ -267,7 +279,7 @@ namespace FishNet.Managing.Client
             ArraySegment<byte> rpcLinks = reader.ReadArraySegmentAndSize();
             ArraySegment<byte> syncValues = reader.ReadArraySegmentAndSize();
 
-            _objectCache.AddSpawn(base.NetworkManager, objectId, ownerId, ost, componentIndex, rootObjectId, parentObjectId, parentComponentIndex, prefabId, localPosition, localRotation, localScale, sceneId, rpcLinks, syncValues);
+            _objectCache.AddSpawn(base.NetworkManager, objectId, ownerId, st, componentIndex, rootObjectId, parentObjectId, parentComponentIndex, prefabId, localPosition, localRotation, localScale, sceneId, rpcLinks, syncValues);
         }
 
 
@@ -353,26 +365,10 @@ namespace FishNet.Managing.Client
         /// </summary>
         /// <param name="reader"></param>
         internal void CacheDespawn(PooledReader reader)
-        {            
+        {
             int objectId = reader.ReadNetworkObjectId();
-            bool disableOnDespawn = reader.ReadBoolean();
-            //Try checking already spawned objects first.
-            if (base.Spawned.TryGetValueIL2CPP(objectId, out NetworkObject nob))
-            {
-                _objectCache.AddDespawn(nob, disableOnDespawn);
-            }
-            /* If not found in already spawned objects see if
-             * the networkObject is in the objectCache. It's possible the despawn
-             * came immediately or shortly after the spawn message, before
-             * the object has been initialized. */
-            else
-            {
-                NetworkObject nob2 = _objectCache.GetInCached(objectId, ClientObjectCache.CacheSearchType.Any);
-                /* Nob may be null if it's a child object being despawned, and the
-                 * parent despawn already occurred. */
-                if (nob2 != null)
-                    _objectCache.AddDespawn(nob2, disableOnDespawn);
-            }
+            DespawnType despawnType = (DespawnType)reader.ReadByte();
+            _objectCache.AddDespawn(objectId, despawnType);
         }
 
 
@@ -534,21 +530,21 @@ namespace FishNet.Managing.Client
                 return null;
             }
 
+            NetworkManager networkManager = base.NetworkManager;
             short prefabId = cnob.PrefabId.Value;
             NetworkObject result = null;
 
             if (prefabId == -1)
             {
-                if (NetworkManager.CanLog(LoggingType.Error))
+                if (networkManager.CanLog(LoggingType.Error))
                     Debug.LogError($"Spawned object has an invalid prefabId. Make sure all objects which are being spawned over the network are within SpawnableObjects on the NetworkManager.");
             }
             else
             {
-                NetworkObject prefab = NetworkManager.SpawnablePrefabs.GetObject(false, prefabId);
                 //Only instantiate if not host.
-                if (!base.NetworkManager.IsHost)
+                if (!networkManager.IsHost)
                 {
-                    Transform parentTransform = null;//TODO FINISH THIS. FIND PARENT!!!!
+                    Transform parentTransform = null;
                     bool hasParent = (cnob.ParentObjectId != null);
                     //Set parentTransform if there's a parent object.
                     if (hasParent)
@@ -558,8 +554,8 @@ namespace FishNet.Managing.Client
 
                         if (nob == null)
                         {
-                            if (base.NetworkManager.CanLog(LoggingType.Error))
-                                Debug.LogError($"NetworkObject not found for ObjectId {objectId}. Prefab {prefab.name} will be instantiated without parent synchronization.");
+                            NetworkObject prefab = networkManager.SpawnablePrefabs.GetObject(false, prefabId);
+                            networkManager.LogError($"NetworkObject not found for ObjectId {objectId}. Prefab {prefab.name} will be instantiated without parent synchronization.");
                         }
                         else
                         {
@@ -569,9 +565,14 @@ namespace FishNet.Managing.Client
                                 byte componentIndex = cnob.ComponentIndex;
                                 NetworkBehaviour nb = nob.GetNetworkBehaviour(componentIndex, false);
                                 if (nb != null)
+                                {
                                     parentTransform = nb.transform;
-                                else if (base.NetworkManager.CanLog(LoggingType.Error))
-                                    Debug.LogError($"NetworkBehaviour on index {componentIndex} could nto be found within NetworkObject {nob.name} with ObjectId {objectId}. Prefab {prefab.name} will be instantiated without parent synchronization.");                                    
+                                }
+                                else
+                                {
+                                    NetworkObject prefab = networkManager.SpawnablePrefabs.GetObject(false, prefabId);
+                                    networkManager.LogError($"NetworkBehaviour on index {componentIndex} could nto be found within NetworkObject {nob.name} with ObjectId {objectId}. Prefab {prefab.name} will be instantiated without parent synchronization.");
+                                }
                             }
                             //The networkObject is the parent.
                             else
@@ -581,22 +582,53 @@ namespace FishNet.Managing.Client
                         }
                     }
 
-                    result = MonoBehaviour.Instantiate<NetworkObject>(prefab);
+                    result = networkManager.GetPooledInstantiated(prefabId, false);
                     Transform t = result.transform;
                     t.SetParent(parentTransform, true);
                     GetTransformProperties(cnob, t, out Vector3 pos, out Quaternion rot, out Vector3 scale);
                     t.SetLocalPositionRotationAndScale(pos, rot, scale);
                     //Only need to set IsGlobal also if not host.
-                    result.SetIsGlobal(cnob.ObjectSpawnType == ObjectSpawnType.InstantiatedGlobal);
+                    result.SetIsGlobal(cnob.SpawnType == SpawnType.InstantiatedGlobal);
                 }
                 //If host then find server instantiated object.
                 else
                 {
-                    NetworkManager.ServerManager.Objects.Spawned.TryGetValueIL2CPP(cnob.ObjectId, out result);
+                    ServerObjects so = networkManager.ServerManager.Objects;
+                    if (!so.Spawned.TryGetValueIL2CPP(cnob.ObjectId, out result))
+                        result = so.GetFromPending(cnob.ObjectId);
+
+                    if (result == null)
+                        networkManager.LogError($"ObjectId {cnob.ObjectId} could not be found in Server spawned, nor Server pending despawn.");
                 }
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Gets a NetworkObject from Spawned, or object cache.
+        /// </summary>
+        /// <param name="cnob"></param>
+        /// <returns></returns>
+        internal NetworkObject GetSpawnedNetworkObject(CachedNetworkObject cnob)
+        {
+            NetworkObject nob;
+            //Try checking already spawned objects first.
+            if (base.Spawned.TryGetValueIL2CPP(cnob.ObjectId, out nob))
+            {
+                return nob;
+            }
+            /* If not found in already spawned objects see if
+             * the networkObject is in the objectCache. It's possible the despawn
+             * came immediately or shortly after the spawn message, before
+             * the object has been initialized. */
+            else
+            {
+                nob = _objectCache.GetInCached(cnob.ObjectId, ClientObjectCache.CacheSearchType.Any);
+                /* Nob may be null if it's a child object being despawned, and the
+                 * parent despawn already occurred. */
+                return nob;
+            }
         }
 
         /// <summary>
