@@ -5340,7 +5340,8 @@ MonoBehaviour:
   _componentIndexCache: 0
   _addedNetworkObject: {fileID: 4601857643171780072}
   _networkObjectCache: {fileID: 4601857643171780072}
-  _syncSeed: 1
+  _syncSeed: 0
+  _syncFullStateOnJoin: 1
   _particleSystem: {fileID: 4601857643171780075}
   _syncAllParticles: 1
   OnParticleCollisionWithGameObject:
@@ -5352,4 +5353,3 @@ MonoBehaviour:
   OnParticleDeath:
     m_PersistentCalls:
       m_Calls: []
-  _logLevel: 3

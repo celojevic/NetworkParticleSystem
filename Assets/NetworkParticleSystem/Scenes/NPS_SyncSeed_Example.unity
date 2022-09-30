@@ -465,7 +465,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!64 &1292806863
 MeshCollider:
   m_ObjectHideFlags: 0
@@ -581,7 +581,7 @@ MonoBehaviour:
   <ChildNetworkObjects>k__BackingField: []
   _isNetworked: 1
   _isGlobal: 0
-  _disableOnDespawn: 0
+  _defaultDespawnType: 0
   NetworkObserver: {fileID: 0}
   <PrefabId>k__BackingField: -1
   _scenePathHash: 1909551119
@@ -5404,6 +5404,7 @@ MonoBehaviour:
   _addedNetworkObject: {fileID: 4601857643171780072}
   _networkObjectCache: {fileID: 4601857643171780072}
   _syncSeed: 1
+  _syncFullStateOnJoin: 0
   _particleSystem: {fileID: 4601857643171780075}
   _syncAllParticles: 0
   OnParticleCollisionWithGameObject:
@@ -5415,3 +5416,4 @@ MonoBehaviour:
   OnParticleDeath:
     m_PersistentCalls:
       m_Calls: []
+  _logLevel: 1
