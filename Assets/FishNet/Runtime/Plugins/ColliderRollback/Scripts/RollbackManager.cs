@@ -2,7 +2,6 @@
 using FishNet.Managing.Timing;
 using FishNet.Transporting;
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 
 namespace FishNet.Component.ColliderRollback
@@ -41,7 +40,7 @@ namespace FishNet.Component.ColliderRollback
         /// Initializes this script for use.
         /// </summary>
         /// <param name="manager"></param>
-        internal void InitializeOnceInternal(NetworkManager manager)
+        internal void InitializeOnce_Internal(NetworkManager manager)
         {
             
         }

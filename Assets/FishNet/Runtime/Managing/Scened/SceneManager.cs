@@ -5,6 +5,7 @@ using FishNet.Managing.Server;
 using FishNet.Object;
 using FishNet.Serializing.Helping;
 using FishNet.Transporting;
+using FishNet.Utility;
 using FishNet.Utility.Extension;
 using FishNet.Utility.Performance;
 using System;
@@ -36,8 +37,9 @@ namespace FishNet.Managing.Scened
         #region Public.
         /// <summary>
         /// Called after the active scene has been set, immediately after scene loads. This will occur before NetworkBehaviour callbacks run for the scene's objects.
+        /// The boolean will indicate if the scene set active was specified by the user.
         /// </summary>
-        public event Action OnActiveSceneSet;
+        public event Action<bool> OnActiveSceneSet;
         /// <summary>
         /// Called when a client loads initial scenes after connecting. Boolean will be true if asServer.
         /// </summary>
@@ -211,9 +213,8 @@ namespace FishNet.Managing.Scened
             _clientManager.RegisterBroadcast<LoadScenesBroadcast>(OnLoadScenes);
             _clientManager.RegisterBroadcast<UnloadScenesBroadcast>(OnUnloadScenes);
             _serverManager.RegisterBroadcast<ClientScenesLoadedBroadcast>(OnClientLoadedScenes);
-
-            _clientManager.RegisterBroadcast<EmptyStartScenesBroadcast>(OnClientEmptyStartScenes);
             _serverManager.RegisterBroadcast<EmptyStartScenesBroadcast>(OnServerEmptyStartScenes);
+            _clientManager.RegisterBroadcast<EmptyStartScenesBroadcast>(OnClientEmptyStartScenes);
         }
 
         private void OnDestroy()
@@ -258,7 +259,7 @@ namespace FishNet.Managing.Scened
         /// Initializes this script for use.
         /// </summary>
         /// <param name="manager"></param>
-        internal void InitializeOnceInternal(NetworkManager manager)
+        internal void InitializeOnce_Internal(NetworkManager manager)
         {
             _networkManager = manager;
         }
@@ -303,6 +304,10 @@ namespace FishNet.Managing.Scened
             //No global scenes to load.
             if (_globalScenes.Length == 0)
             {
+                /* Invoke that client had loaded the default scenes immediately,
+                 * since there are no scenes to load. */
+                //OnClientLoadedScenes(connection, new ClientScenesLoadedBroadcast());
+                //Tell the client there are no scenes to load.
                 EmptyStartScenesBroadcast msg = new EmptyStartScenesBroadcast();
                 connection.Broadcast(msg);
             }
@@ -313,7 +318,7 @@ namespace FishNet.Managing.Scened
                 sld.Options = _globalSceneLoadData.Options;
                 sld.ReplaceScenes = _globalSceneLoadData.ReplaceScenes;
 
-                LoadQueueData qd = new LoadQueueData(SceneScopeType.Global, new NetworkConnection[0], sld, _globalScenes, false);
+                LoadQueueData qd = new LoadQueueData(SceneScopeType.Global, Array.Empty<NetworkConnection>(), sld, _globalScenes, false);
                 //Send message to load the networked scenes.
                 LoadScenesBroadcast msg = new LoadScenesBroadcast()
                 {
@@ -329,6 +334,7 @@ namespace FishNet.Managing.Scened
         /// </summary>
         private void OnClientEmptyStartScenes(EmptyStartScenesBroadcast msg)
         {
+            TryInvokeLoadedStartScenes(_clientManager.Connection, false);
             _clientManager.Broadcast(msg);
         }
         /// <summary>
@@ -337,16 +343,10 @@ namespace FishNet.Managing.Scened
         private void OnServerEmptyStartScenes(NetworkConnection conn, EmptyStartScenesBroadcast msg)
         {
             //Already received, shouldn't be happening again.
-            if (conn.LoadedStartScenes)
-            {
-                if (_networkManager.CanLog(LoggingType.Common))
-                    Debug.LogError($"Received multiple EmptyStartSceneBroadcast from connectionId {conn.ClientId}. Connection will be kicked immediately.");
-                _networkManager.TransportManager.Transport.StopConnection(conn.ClientId, true);
-            }
+            if (conn.LoadedStartScenes(true))
+                conn.Kick(KickReason.ExploitAttempt, LoggingType.Common, $"Received multiple EmptyStartSceneBroadcast from connectionId {conn.ClientId}. Connection will be kicked immediately.");
             else
-            {
                 OnClientLoadedScenes(conn, new ClientScenesLoadedBroadcast());
-            }
         }
         #endregion
 
@@ -386,7 +386,7 @@ namespace FishNet.Managing.Scened
                 foreach (Scene s in scenesToUnload)
                     SceneConnections.Remove(s);
                 SceneUnloadData sud = new SceneUnloadData(SceneLookupData.CreateData(scenesToUnload));
-                UnloadConnectionScenes(new NetworkConnection[0], sud);
+                UnloadConnectionScenes(Array.Empty<NetworkConnection>(), sud);
             }
         }
         #endregion
@@ -405,10 +405,7 @@ namespace FishNet.Managing.Scened
             //There's no loads or unloads pending, kick client.
             if (pendingLoads == 0)
             {
-                if (_networkManager.CanLog(LoggingType.Common))
-                    Debug.LogError($"Received excessive ClientScenesLoadedBroadcast from connectionId {conn.ClientId}. Connection will be kicked immediately.");
-                _networkManager.TransportManager.Transport.StopConnection(conn.ClientId, true);
-
+                conn.Kick(KickReason.ExploitAttempt, LoggingType.Common, $"Received excessive ClientScenesLoadedBroadcast from connectionId {conn.ClientId}. Connection will be kicked immediately.");
                 return;
             }
             //If there is a load pending then update pending count.
@@ -562,21 +559,26 @@ namespace FishNet.Managing.Scened
         /// <param name="sceneLoadData">Data about which scenes to load.</param>
         public void LoadGlobalScenes(SceneLoadData sceneLoadData)
         {
-            LoadGlobalScenesInternal(sceneLoadData, _globalScenes, true);
+            LoadGlobalScenes_Internal(sceneLoadData, _globalScenes, true);
         }
         /// <summary>
         /// Adds to load scene queue.
         /// </summary>
         /// <param name="sceneLoadData"></param>
         /// <param name="asServer"></param>
-        private void LoadGlobalScenesInternal(SceneLoadData sceneLoadData, string[] globalScenes, bool asServer)
+        private void LoadGlobalScenes_Internal(SceneLoadData sceneLoadData, string[] globalScenes, bool asServer)
         {
             if (!CanExecute(asServer, true))
                 return;
             if (SceneDataInvalid(sceneLoadData, true))
                 return;
+            if (sceneLoadData.Options.AllowStacking)
+            {
+                _networkManager.LogError($"Stacking scenes is not allowed with Global scenes.");
+                return;
+            }
 
-            LoadQueueData lqd = new LoadQueueData(SceneScopeType.Global, new NetworkConnection[0], sceneLoadData, globalScenes, asServer);
+            LoadQueueData lqd = new LoadQueueData(SceneScopeType.Global, Array.Empty<NetworkConnection>(), sceneLoadData, globalScenes, asServer);
             QueueOperation(lqd);
         }
 
@@ -596,7 +598,7 @@ namespace FishNet.Managing.Scened
         /// <param name="sceneLoadData">Data about which scenes to load.</param>
         public void LoadConnectionScenes(NetworkConnection[] conns, SceneLoadData sceneLoadData)
         {
-            LoadConnectionScenesInternal(conns, sceneLoadData, _globalScenes, true);
+            LoadConnectionScenes_Internal(conns, sceneLoadData, _globalScenes, true);
         }
         /// <summary>
         /// Loads scenes on server without telling clients to load the scenes.
@@ -604,7 +606,7 @@ namespace FishNet.Managing.Scened
         /// <param name="sceneLoadData">Data about which scenes to load.</param>
         public void LoadConnectionScenes(SceneLoadData sceneLoadData)
         {
-            LoadConnectionScenesInternal(new NetworkConnection[0], sceneLoadData, _globalScenes, true);
+            LoadConnectionScenes_Internal(Array.Empty<NetworkConnection>(), sceneLoadData, _globalScenes, true);
         }
 
         /// <summary>
@@ -612,7 +614,7 @@ namespace FishNet.Managing.Scened
         /// </summary>
         /// <param name="sceneLoadData"></param>
         /// <param name="asServer"></param>
-        private void LoadConnectionScenesInternal(NetworkConnection[] conns, SceneLoadData sceneLoadData, string[] globalScenes, bool asServer)
+        private void LoadConnectionScenes_Internal(NetworkConnection[] conns, SceneLoadData sceneLoadData, string[] globalScenes, bool asServer)
         {
             if (!CanExecute(asServer, true))
                 return;
@@ -628,48 +630,36 @@ namespace FishNet.Managing.Scened
         /// </summary>
         /// <param name="warn"></param>
         /// <returns></returns>
-        private bool CanMoveNetworkObject(NetworkObject nob)
+        private bool CanMoveNetworkObject(NetworkObject nob, bool warn)
         {
-            bool canLog = _networkManager.CanLog(LoggingType.Warning);
-
             //Null.
             if (nob == null)
-            {
-                if (canLog)
-                    Debug.LogWarning($"NetworkObject is null.");
-                return false;
-            }
+                return WarnAndReturnFalse($"NetworkObject is null.");
             //Not networked.
             if (!nob.IsNetworked)
-            {
-                if (canLog)
-                    Debug.LogWarning($"NetworkObject {nob.name} cannot be moved as it is not networked.");
-                return false;
-            }
-
+                return WarnAndReturnFalse($"NetworkObject {nob.name} cannot be moved as it is not networked.");
             //Not spawned.
             if (!nob.IsSpawned)
-            {
-                if (canLog)
-                    Debug.LogWarning($"NetworkObject {nob.name} canot be moved as it is not spawned.");
-                return false;
-            }
+                return WarnAndReturnFalse($"NetworkObject {nob.name} canot be moved as it is not spawned.");
             //SceneObject.
             if (nob.IsSceneObject)
-            {
-                if (canLog)
-                    Debug.LogWarning($"NetworkObject {nob.name} cannot be moved as it is a scene object.");
-                return false;
-            }
+                return WarnAndReturnFalse($"NetworkObject {nob.name} cannot be moved as it is a scene object.");
             //Not root.
             if (nob.transform.parent != null)
+                return WarnAndReturnFalse($"NetworkObject {nob.name} cannot be moved because it is not the root object. Unity can only move root objects between scenes.");
+            //In DDOL and IsGlobal.
+            if (nob.IsGlobal && (nob.gameObject.scene.name == DDOLFinder.GetDDOL().gameObject.scene.name))
+                return WarnAndReturnFalse("NetworkObject {nob.name} cannot be moved because it is global. Global objects must remain in the DontDestroyOnLoad scene.");
+
+            //Fall through success.
+            return true;
+
+            bool WarnAndReturnFalse(string msg)
             {
-                if (canLog)
-                    Debug.LogWarning($"NetworkObject {nob.name} cannot be moved because it is not the root object. Unity can only move root objects between scenes.");
+                if (warn)
+                    _networkManager.LogWarning(msg);
                 return false;
             }
-
-            return true;
         }
 
         /// <summary>
@@ -679,6 +669,7 @@ namespace FishNet.Managing.Scened
         private IEnumerator __LoadScenes()
         {
             LoadQueueData data = _queuedOperations[0] as LoadQueueData;
+            SceneLoadData sceneLoadData = data.SceneLoadData;
             //True if running as server.
             bool asServer = data.AsServer;
             //True if running as client, while network server is active.
@@ -689,15 +680,14 @@ namespace FishNet.Managing.Scened
                 yield break;
 
             /* Scene sanity checks. */
-            if (data.SceneLoadData.SceneLookupDatas.Length == 0)
+            if (sceneLoadData.SceneLookupDatas.Length == 0)
             {
-                if (_networkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"No scenes specified to load.");
+                _networkManager.LogWarning($"No scenes specified to load.");
                 yield break;
             }
 
             //True if replacing scenes with specified ones.
-            ReplaceOption replaceScenes = data.SceneLoadData.ReplaceScenes;
+            ReplaceOption replaceScenes = sceneLoadData.ReplaceScenes;
 
             /* Immediately set new global scenes. If on client this is whatever
              * server passes in. This should be set even if scope type
@@ -712,8 +702,8 @@ namespace FishNet.Managing.Scened
              * is global. */
             else if (asServer && data.ScopeType == SceneScopeType.Global)
             {
-                _globalSceneLoadData = data.SceneLoadData;
-                string[] names = data.SceneLoadData.SceneLookupDatas.GetNames();
+                _globalSceneLoadData = sceneLoadData;
+                string[] names = sceneLoadData.SceneLookupDatas.GetNames();
                 //If replacing.
                 if (replaceScenes != ReplaceOption.None)
                 {
@@ -738,7 +728,7 @@ namespace FishNet.Managing.Scened
 
             /* Make a null filled array. This will be populated
              * using loaded scenes, or already loaded (eg cannot be loaded) scenes. */
-            SceneLookupData[] broadcastLookupDatas = new SceneLookupData[data.SceneLoadData.SceneLookupDatas.Length];
+            SceneLookupData[] broadcastLookupDatas = new SceneLookupData[sceneLoadData.SceneLookupDatas.Length];
 
             /* LoadableScenes and SceneReferenceDatas.
             /* Will contain scenes which may be loaded.
@@ -746,12 +736,12 @@ namespace FishNet.Managing.Scened
              * if for example loadOnlyUnloaded is true and
              * the scene is already loaded. */
             List<SceneLookupData> loadableScenes = new List<SceneLookupData>();
-            for (int i = 0; i < data.SceneLoadData.SceneLookupDatas.Length; i++)
+            for (int i = 0; i < sceneLoadData.SceneLookupDatas.Length; i++)
             {
-                SceneLookupData sld = data.SceneLoadData.SceneLookupDatas[i];
+                SceneLookupData lookupData = sceneLoadData.SceneLookupDatas[i];
                 //Scene to load.
                 bool byHandle;
-                Scene s = sld.GetScene(out byHandle);
+                Scene s = lookupData.GetScene(out byHandle);
                 //If found then add it to requestedLoadScenes.
                 if (s.IsValid())
                 {
@@ -760,11 +750,11 @@ namespace FishNet.Managing.Scened
                         requestedLoadSceneHandles.Add(s.handle);
                 }
 
-                if (CanLoadScene(data, sld))
+                if (CanLoadScene(data, lookupData))
                 {
                     //Don't load if as host, server side would have loaded already.
                     if (!asHost)
-                        loadableScenes.Add(sld);
+                        loadableScenes.Add(lookupData);
                 }
                 //Only the server needs to find scene handles to send to client. Client will send these back to the server.
                 else if (asServer)
@@ -790,14 +780,16 @@ namespace FishNet.Managing.Scened
             //Do not run if running as client, and server is active. This would have already run as server.
             if (!asHost)
             {
-                foreach (NetworkObject nob in data.SceneLoadData.MovedNetworkObjects)
+                foreach (NetworkObject nob in sceneLoadData.MovedNetworkObjects)
                 {
                     //NetworkObject might be null if client lost observation of it.
-                    if (nob != null && CanMoveNetworkObject(nob))
+                    if (nob != null && CanMoveNetworkObject(nob, true))
                         UnitySceneManager.MoveGameObjectToScene(nob.gameObject, GetMovedObjectsScene());
                 }
             }
 
+            //Connection scenes handles prior to ConnectionScenes being modified.
+            List<int> connectionScenesHandlesCached = new List<int>();
             /* Resetting SceneConnections. */
             /* If server and replacing scenes.
              * It's important to run this AFTER moving MovedNetworkObjects
@@ -805,11 +797,15 @@ namespace FishNet.Managing.Scened
              * the scene condition would pick them up as still in the leaving scene. */
             if (asServer && (replaceScenes != ReplaceOption.None))
             {
+
+                Scene[] sceneConnectionsKeys = SceneConnections.Keys.ToArray();
+                for (int i = 0; i < sceneConnectionsKeys.Length; i++)
+                    connectionScenesHandlesCached.Add(sceneConnectionsKeys[i].handle);
+
                 //If global then remove all connections from all scenes.
                 if (data.ScopeType == SceneScopeType.Global)
                 {
-                    Scene[] scenes = SceneConnections.Keys.ToArray();
-                    foreach (Scene s in scenes)
+                    foreach (Scene s in sceneConnectionsKeys)
                         RemoveAllConnectionsFromScene(s);
                 }
                 //Connections.
@@ -853,8 +849,16 @@ namespace FishNet.Managing.Scened
                     if (_manualUnloadScenes.Contains(s))
                         continue;
 
+                    bool inScenesCache = connectionScenesHandlesCached.Contains(s.handle);
                     HashSet<NetworkConnection> conns;
-                    if (SceneConnections.TryGetValueIL2CPP(s, out conns))
+                    bool inScenesCurrent = SceneConnections.TryGetValueIL2CPP(s, out conns);
+                    //If was in scenes previously but isnt now then no connections reside in the scene.
+                    if (inScenesCache && !inScenesCurrent)
+                    {
+                        //Intentionally left blank.
+                    }
+                    //If still in cache see if any connections exist.
+                    else if (SceneConnections.TryGetValueIL2CPP(s, out conns))
                     {
                         //Still has clients in scene.
                         if (conns != null && conns.Count > 0)
@@ -892,7 +896,7 @@ namespace FishNet.Managing.Scened
                 Scene s = GetMovedObjectsScene();
                 foreach (NetworkObject nob in _networkManager.ClientManager.Objects.Spawned.Values)
                 {
-                    if (!nob.IsSceneObject)
+                    if (CanMoveNetworkObject(nob, false))
                         UnitySceneManager.MoveGameObjectToScene(nob.gameObject, s);
                 }
             }
@@ -918,7 +922,7 @@ namespace FishNet.Managing.Scened
                 LoadSceneParameters loadSceneParameters = new LoadSceneParameters()
                 {
                     loadSceneMode = LoadSceneMode.Additive,
-                    localPhysicsMode = data.SceneLoadData.Options.LocalPhysics
+                    localPhysicsMode = sceneLoadData.Options.LocalPhysics
                 };
 
                 /* How much percentage each scene load can be worth
@@ -932,7 +936,7 @@ namespace FishNet.Managing.Scened
                     float percent = _sceneProcessor.GetPercentComplete();
                     InvokePercentageChange(i, maximumIndexWorth, percent);
                     yield return null;
-                }    
+                }
 
                 //Invokes OnScenePercentChange with progress.
                 void InvokePercentageChange(int index, float maximumWorth, float currentScenePercent)
@@ -955,9 +959,8 @@ namespace FishNet.Managing.Scened
             //When all scenes are loaded invoke with 100% done.
             InvokeOnScenePercentChange(data, 1f);
 
-
             /* Add to ManuallyUnloadScenes. */
-            if (data.AsServer && !data.SceneLoadData.Options.AutomaticallyUnload)
+            if (data.AsServer && !sceneLoadData.Options.AutomaticallyUnload)
             {
                 foreach (Scene s in loadedScenes)
                     _manualUnloadScenes.Add(s);
@@ -968,13 +971,13 @@ namespace FishNet.Managing.Scened
                 //Find the first valid scene to move objects to.
                 Scene firstValidScene = default;
                 //If to stack scenes.
-                if (data.SceneLoadData.Options.AllowStacking)
+                if (sceneLoadData.Options.AllowStacking)
                 {
-                    Scene firstScene = GetFirstLookupScene(data.SceneLoadData.SceneLookupDatas);
+                    Scene firstScene = sceneLoadData.GetFirstLookupScene();
                     /* If the first lookup data contains a handle and the scene
                      * is found for that handle then use that as the moved to scene.
                      * Nobs always move to the first specified scene. */
-                    if (data.SceneLoadData.SceneLookupDatas[0].Handle != 0 && !string.IsNullOrEmpty(firstScene.name))
+                    if (sceneLoadData.SceneLookupDatas[0].Handle != 0 && !string.IsNullOrEmpty(firstScene.name))
                     {
                         firstValidScene = firstScene;
                     }
@@ -992,20 +995,15 @@ namespace FishNet.Managing.Scened
                         /* Shouldn't be possible since the scene will always exist either by 
                          * just being loaded or already loaded. */
                         if (string.IsNullOrEmpty(lastSameSceneName.name))
-                        {
-                            if (_networkManager.CanLog(LoggingType.Error))
-                                Debug.LogError($"Scene {data.SceneLoadData.SceneLookupDatas[0].Name} could not be found in loaded scenes.");
-                        }
+                            _networkManager.LogError($"Scene {sceneLoadData.SceneLookupDatas[0].Name} could not be found in loaded scenes.");
                         else
-                        {
                             firstValidScene = lastSameSceneName;
-                        }
                     }
                 }
                 //Not stacking.
                 else
                 {
-                    firstValidScene = GetFirstLookupScene(data.SceneLoadData.SceneLookupDatas);
+                    firstValidScene = sceneLoadData.GetFirstLookupScene();
                     //If not found by look then try firstloaded.
                     if (string.IsNullOrEmpty(firstValidScene.name))
                         firstValidScene = GetFirstLoadedScene();
@@ -1019,26 +1017,13 @@ namespace FishNet.Managing.Scened
                     else
                         return default;
                 }
-                //Gets first found scene in datas.
-                Scene GetFirstLookupScene(SceneLookupData[] datas)
-                {
-                    foreach (SceneLookupData sld in datas)
-                    {
-                        Scene result = sld.GetScene(out _);
-                        if (!string.IsNullOrEmpty(result.name))
-                            return result;
-                    }
-
-                    return default;
-                }
 
                 //If firstValidScene is still invalid then throw.
                 if (string.IsNullOrEmpty(firstValidScene.name))
                 {
-                    if (_networkManager.CanLog(LoggingType.Error))
-                        Debug.LogError($"Unable to move objects to a new scene because new scene lookup has failed.");
+                    _networkManager.LogError($"Unable to move objects to a new scene because new scene lookup has failed.");
                 }
-                //Move objects.
+                //Move objects from movedobejctsscene to first valid scene.
                 else
                 {
                     Scene s = GetMovedObjectsScene();
@@ -1071,7 +1056,28 @@ namespace FishNet.Managing.Scened
                 yield return null;
             } while (!allScenesLoaded);
 
-            SetActiveScene();
+            SetActiveScene_Local();
+            void SetActiveScene_Local()
+            {
+                bool byUser;
+                Scene preferredActiveScene = GetUserPreferredActiveScene(sceneLoadData.PreferredActiveScene, out byUser);
+                //If preferred still is not set then try to figure it out.
+                if (!preferredActiveScene.IsValid())
+                {
+                    /* Populate preferred scene to first loaded if replacing
+                     * scenes for connection. Does not need to be set for
+                     * global because when a global exist it's always set
+                     * as the active scene.
+                     * 
+                     * Do not set preferred scene if server as this could cause
+                     * problems when stacking or connection specific scenes. Let the
+                     * user make those changes. */
+                    if (sceneLoadData.ReplaceScenes != ReplaceOption.None && data.ScopeType == SceneScopeType.Connections && !_networkManager.IsServer)
+                        preferredActiveScene = sceneLoadData.GetFirstLookupScene();
+                }
+
+                SetActiveScene(preferredActiveScene, byUser);
+            }
 
             //Only the server needs to find scene handles to send to client. Client will send these back to the server.
             if (asServer)
@@ -1094,8 +1100,7 @@ namespace FishNet.Managing.Scened
                         }
 
                         //If here there are no null entries.
-                        if (_networkManager.CanLog(LoggingType.Error))
-                            Debug.LogError($"Cannot add scene to broadcastLookupDatas, collection is full.");
+                        _networkManager.LogError($"Cannot add scene to broadcastLookupDatas, collection is full.");
                     }
                 }
             }
@@ -1139,7 +1144,7 @@ namespace FishNet.Managing.Scened
             {
                 ClientScenesLoadedBroadcast msg = new ClientScenesLoadedBroadcast()
                 {
-                    SceneLookupDatas = data.SceneLoadData.SceneLookupDatas
+                    SceneLookupDatas = sceneLoadData.SceneLookupDatas
                 };
                 _clientManager.Broadcast(msg);
             }
@@ -1163,9 +1168,9 @@ namespace FishNet.Managing.Scened
 
             LoadQueueData qd = msg.QueueData;
             if (qd.ScopeType == SceneScopeType.Global)
-                LoadGlobalScenesInternal(qd.SceneLoadData, qd.GlobalScenes, false);
+                LoadGlobalScenes_Internal(qd.SceneLoadData, qd.GlobalScenes, false);
             else
-                LoadConnectionScenesInternal(new NetworkConnection[0], qd.SceneLoadData, qd.GlobalScenes, false);
+                LoadConnectionScenes_Internal(Array.Empty<NetworkConnection>(), qd.SceneLoadData, qd.GlobalScenes, false);
         }
         #endregion
 
@@ -1179,7 +1184,7 @@ namespace FishNet.Managing.Scened
             if (!CanExecute(true, true))
                 return;
 
-            UnloadGlobalScenesInternal(sceneUnloadData, _globalScenes, true);
+            UnloadGlobalScenes_Internal(sceneUnloadData, _globalScenes, true);
         }
         /// <summary>
         /// 
@@ -1188,9 +1193,9 @@ namespace FishNet.Managing.Scened
         /// <param name="conns"></param>
         /// <param name="additiveScenes"></param>
         /// <param name="asServer"></param>
-        private void UnloadGlobalScenesInternal(SceneUnloadData sceneUnloadData, string[] globalScenes, bool asServer)
+        private void UnloadGlobalScenes_Internal(SceneUnloadData sceneUnloadData, string[] globalScenes, bool asServer)
         {
-            UnloadQueueData uqd = new UnloadQueueData(SceneScopeType.Global, new NetworkConnection[0], sceneUnloadData, globalScenes, asServer);
+            UnloadQueueData uqd = new UnloadQueueData(SceneScopeType.Global, Array.Empty<NetworkConnection>(), sceneUnloadData, globalScenes, asServer);
             QueueOperation(uqd);
         }
 
@@ -1211,7 +1216,7 @@ namespace FishNet.Managing.Scened
         /// <param name="sceneUnloadData">Data about which scenes to unload.</param>
         public void UnloadConnectionScenes(NetworkConnection[] connections, SceneUnloadData sceneUnloadData)
         {
-            UnloadConnectionScenesInternal(connections, sceneUnloadData, _globalScenes, true);
+            UnloadConnectionScenes_Internal(connections, sceneUnloadData, _globalScenes, true);
         }
 
         /// <summary>
@@ -1220,7 +1225,7 @@ namespace FishNet.Managing.Scened
         /// <param name="sceneUnloadData">Data about which scenes to unload.</param>
         public void UnloadConnectionScenes(SceneUnloadData sceneUnloadData)
         {
-            UnloadConnectionScenesInternal(new NetworkConnection[0], sceneUnloadData, _globalScenes, true);
+            UnloadConnectionScenes_Internal(Array.Empty<NetworkConnection>(), sceneUnloadData, _globalScenes, true);
         }
         /// <summary>
         /// Unloads scenes for connections.
@@ -1229,7 +1234,7 @@ namespace FishNet.Managing.Scened
         /// <param name="sceneUnloadData"></param>
         /// <param name="globalScenes"></param>
         /// <param name="asServer"></param>
-        private void UnloadConnectionScenesInternal(NetworkConnection[] connections, SceneUnloadData sceneUnloadData, string[] globalScenes, bool asServer)
+        private void UnloadConnectionScenes_Internal(NetworkConnection[] connections, SceneUnloadData sceneUnloadData, string[] globalScenes, bool asServer)
         {
             if (!CanExecute(asServer, true))
                 return;
@@ -1246,6 +1251,7 @@ namespace FishNet.Managing.Scened
         private IEnumerator __UnloadScenes()
         {
             UnloadQueueData data = _queuedOperations[0] as UnloadQueueData;
+            SceneUnloadData sceneUnloadData = data.SceneUnloadData;
 
             //If connection went inactive.
             if (!ConnectionActive(data.AsServer))
@@ -1258,15 +1264,14 @@ namespace FishNet.Managing.Scened
             bool asServer = data.AsServer;
 
             //Get scenes to unload.
-            Scene[] scenes = GetScenes(data.SceneUnloadData.SceneLookupDatas);
+            Scene[] scenes = GetScenes(sceneUnloadData.SceneLookupDatas);
             /* No scenes found. Only run this if not asHost.
              * While asHost scenes will possibly not exist because
              * server side has already unloaded them. But rest of
              * the unload should continue. */
             if (scenes.Length == 0 && !asClientHost)
             {
-                if (_networkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"No scenes were found to unload.");
+                _networkManager.LogWarning($"No scenes were found to unload.");
                 yield break;
             }
 
@@ -1277,7 +1282,7 @@ namespace FishNet.Managing.Scened
             * then they shouldn't be in global to begin with. */
             if (asServer && data.ScopeType == SceneScopeType.Global)
             {
-                RemoveFromGlobalScenes(data.SceneUnloadData.SceneLookupDatas);
+                RemoveFromGlobalScenes(sceneUnloadData.SceneLookupDatas);
                 //Update queue data.
                 data.GlobalScenes = _globalScenes;
             }
@@ -1302,7 +1307,7 @@ namespace FishNet.Managing.Scened
             List<Scene> unloadableScenes = scenes.ToList();
             /* If asServer and KeepUnused then clear all unloadables.
              * The clients will still unload the scenes. */
-            if ((asServer || asClientHost) && data.SceneUnloadData.Options.Mode == UnloadOptions.ServerUnloadMode.KeepUnused)
+            if ((asServer || asClientHost) && sceneUnloadData.Options.Mode == UnloadOptions.ServerUnloadMode.KeepUnused)
                 unloadableScenes.Clear();
             /* Check to remove global scenes unloadableScenes.
              * This will need to be done if scenes are being unloaded
@@ -1311,7 +1316,7 @@ namespace FishNet.Managing.Scened
             if (data.ScopeType == SceneScopeType.Connections)
                 RemoveGlobalScenes(unloadableScenes);
             //If set to unload unused only.
-            if (data.SceneUnloadData.Options.Mode == UnloadOptions.ServerUnloadMode.UnloadUnused)
+            if (sceneUnloadData.Options.Mode == UnloadOptions.ServerUnloadMode.UnloadUnused)
                 RemoveOccupiedScenes(unloadableScenes);
 
             //If there are scenes to unload.
@@ -1345,7 +1350,10 @@ namespace FishNet.Managing.Scened
             * sense given unity is supposed to be single threaded. Must be
             * something to do with the coroutine. */
             yield return null;
-            SetActiveScene();
+
+            bool byUser;
+            Scene preferredActiveScene = GetUserPreferredActiveScene(sceneUnloadData.PreferredActiveScene, out byUser);
+            SetActiveScene(preferredActiveScene, byUser);
 
             /* If running as server then make sure server
              * is still active after the unloads. If so
@@ -1389,9 +1397,9 @@ namespace FishNet.Managing.Scened
         {
             UnloadQueueData qd = msg.QueueData;
             if (qd.ScopeType == SceneScopeType.Global)
-                UnloadGlobalScenesInternal(qd.SceneUnloadData, qd.GlobalScenes, false);
+                UnloadGlobalScenes_Internal(qd.SceneUnloadData, qd.GlobalScenes, false);
             else
-                UnloadConnectionScenesInternal(new NetworkConnection[0], qd.SceneUnloadData, qd.GlobalScenes, false);
+                UnloadConnectionScenes_Internal(Array.Empty<NetworkConnection>(), qd.SceneUnloadData, qd.GlobalScenes, false);
         }
         #endregion
 
@@ -1491,8 +1499,7 @@ namespace FishNet.Managing.Scened
             //No owner.
             if (!nob.Owner.IsValid)
             {
-                if (_networkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"NetworkObject {nob.name} does not have an owner.");
+                _networkManager.LogWarning($"NetworkObject {nob.name} does not have an owner.");
                 return;
             }
             //Won't add to default if there are globals.
@@ -1504,10 +1511,11 @@ namespace FishNet.Managing.Scened
 
         /// <summary>
         /// Adds a connection to a scene. This will always be called one connection at a time because connections are only added after they invidually validate loading the scene.
+        /// Exposed for power users, use caution.
         /// </summary>
-        /// <param name="sceneName"></param>
-        /// <param name="conn"></param>
-        private void AddConnectionToScene(NetworkConnection conn, Scene scene)
+        /// <param name="conn">Connection to add.</param>
+        /// <param name="scene">Scene to add the connection to.</param>
+        public void AddConnectionToScene(NetworkConnection conn, Scene scene)
         {
             HashSet<NetworkConnection> hs;
             //Scene doesn't have any connections yet.
@@ -1539,10 +1547,10 @@ namespace FishNet.Managing.Scened
 
         /// <summary>
         /// Removes connections from any scene which is not global.
+        /// Exposed for power users, use caution.
         /// </summary>
         /// <param name="conns"></param>
-        /// <param name="asd"></param>
-        private void RemoveConnectionsFromNonGlobalScenes(NetworkConnection[] conns)
+        public void RemoveConnectionsFromNonGlobalScenes(NetworkConnection[] conns)
         {
             List<Scene> removedScenes = new List<Scene>();
 
@@ -1592,10 +1600,11 @@ namespace FishNet.Managing.Scened
 
         /// <summary>
         /// Removes connections from specified scenes.
+        /// Exposed for power users, use caution.
         /// </summary>
-        /// <param name="conns"></param>
-        /// <param name="asd"></param>
-        private void RemoveConnectionsFromScene(NetworkConnection[] conns, Scene scene)
+        /// <param name="conns">Connections to remove.</param>
+        /// <param name="scene">Scene to remove from.</param>
+        public void RemoveConnectionsFromScene(NetworkConnection[] conns, Scene scene)
         {
             HashSet<NetworkConnection> hs;
             //No hashset for scene, so no connections are in scene.
@@ -1636,8 +1645,8 @@ namespace FishNet.Managing.Scened
         /// <summary>
         /// Removes all connections from a scene.
         /// </summary>
-        /// <param name="scene"></param>
-        private void RemoveAllConnectionsFromScene(Scene scene)
+        /// <param name="scene">Scene to remove connections from.</param>
+        public void RemoveAllConnectionsFromScene(Scene scene)
         {
             HashSet<NetworkConnection> hs;
             //No hashset for scene, so no connections are in scene.
@@ -1775,7 +1784,7 @@ namespace FishNet.Managing.Scened
         /// <returns></returns>
         public static Scene GetScene(string sceneName)
         {
-            return UnityEngine.SceneManagement.SceneManager.GetSceneByName(sceneName);
+            return UnitySceneManager.GetSceneByName(sceneName);
         }
         /// <summary>
         /// Returns a scene by handle.
@@ -1784,10 +1793,10 @@ namespace FishNet.Managing.Scened
         /// <returns></returns>
         public static Scene GetScene(int sceneHandle)
         {
-            int count = UnityEngine.SceneManagement.SceneManager.sceneCount;
+            int count = UnitySceneManager.sceneCount;
             for (int i = 0; i < count; i++)
             {
-                Scene s = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
+                Scene s = UnitySceneManager.GetSceneAt(i);
                 if (s.handle == sceneHandle)
                     return s;
             }
@@ -1904,33 +1913,60 @@ namespace FishNet.Managing.Scened
         /// Sets the first global scene as the active scene.
         /// If a global scene is not available then FallbackActiveScene is used.
         /// </summary>
-        private void SetActiveScene()
+        private void SetActiveScene(Scene preferredScene = default, bool byUser = false)
         {
-            if (!_setActiveScene)
-                return;
+            //If user specified then skip figuring it out checks.
+            if (byUser && preferredScene.IsValid())
+            {
+                CompleteSetActive(preferredScene);
+            }
+            //Need to figure out which scene to use.
+            else
+            {
+                Scene s = default;
 
-            Scene s = default;
-            if (_globalScenes != null && _globalScenes.Length > 0)
-                s = GetScene(_globalScenes[0]);
+                //Feature is disabled.
+                if (!_setActiveScene)
+                {
+                    //Still call complete to invoke events.
+                    CompleteSetActive(s);
+                }
+                else
+                {
+                    if (_globalScenes != null && _globalScenes.Length > 0)
+                        s = GetScene(_globalScenes[0]);
+                    else if (preferredScene.IsValid())
+                        s = preferredScene;
 
-            /* If scene isn't set from global then make
-             * sure currently active isn't the movedobjectscene.
-             * If it is, then use the fallback scene. */
-            if (string.IsNullOrEmpty(s.name) && UnitySceneManager.GetActiveScene() == _movedObjectsScene)
-                s = GetFallbackActiveScene();
+                    /* If scene isn't set from global then make
+                     * sure currently active isn't the movedobjectscene.
+                     * If it is, then use the fallback scene. */
+                    if (string.IsNullOrEmpty(s.name) && UnitySceneManager.GetActiveScene() == _movedObjectsScene)
+                        s = GetFallbackActiveScene();
 
-            //If was changed then update active scene.
-            if (!string.IsNullOrEmpty(s.name))
-                UnitySceneManager.SetActiveScene(s);
+                    CompleteSetActive(s);
+                }
+            }
 
-            OnActiveSceneSet?.Invoke();
-            OnActiveSceneSetInternal?.Invoke();
+            //Completes setting the active scene with specified value.
+            void CompleteSetActive(Scene scene)
+            {
+                bool sceneValid = scene.IsValid();
+                if (sceneValid)
+                    UnitySceneManager.SetActiveScene(scene);
 
-            //Also update light probes.
-            if (_lightProbeUpdating == LightProbeUpdateType.Asynchronous)
-                LightProbes.TetrahedralizeAsync();
-            else if (_lightProbeUpdating == LightProbeUpdateType.BlockThread)
-                LightProbes.Tetrahedralize();
+                OnActiveSceneSet?.Invoke(byUser);
+                OnActiveSceneSetInternal?.Invoke();
+
+                if (sceneValid)
+                {
+                    //Also update light probes.
+                    if (_lightProbeUpdating == LightProbeUpdateType.Asynchronous)
+                        LightProbes.TetrahedralizeAsync();
+                    else if (_lightProbeUpdating == LightProbeUpdateType.BlockThread)
+                        LightProbes.Tetrahedralize();
+                }
+            }
         }
 
         /// <summary>
@@ -1966,11 +2002,25 @@ namespace FishNet.Managing.Scened
         {
             //Create moved objects scene. It will probably be used eventually. If not, no harm either way.
             if (string.IsNullOrEmpty(_delayedDestroyScene.name))
-                _delayedDestroyScene = UnityEngine.SceneManagement.SceneManager.CreateScene("DelayedDestroy");
+                _delayedDestroyScene = UnitySceneManager.CreateScene("DelayedDestroy");
 
             return _delayedDestroyScene;
         }
 
+        /// <summary>
+        /// Returns a preferred active scene to use.
+        /// </summary>
+        private Scene GetUserPreferredActiveScene(SceneLookupData sld, out bool byUser)
+        {
+            byUser = false;
+            if (sld == null)
+                return default;
+
+            Scene s = sld.GetScene(out _);
+            if (s.IsValid())
+                byUser = true;
+            return s;
+        }
 
         #region Sanity checks.
         /// <summary>
@@ -1982,12 +2032,8 @@ namespace FishNet.Managing.Scened
         private bool SceneDataInvalid(SceneLoadData data, bool error)
         {
             bool result = data.DataInvalid();
-
             if (result && error)
-            {
-                if (_networkManager.CanLog(LoggingType.Error))
-                    Debug.LogError(INVALID_SCENELOADDATA);
-            }
+                _networkManager.LogError(INVALID_SCENELOADDATA);
 
             return result;
         }
@@ -2001,10 +2047,8 @@ namespace FishNet.Managing.Scened
         {
             bool result = data.DataInvalid();
             if (result && error)
-            {
-                if (_networkManager.CanLog(LoggingType.Error))
-                    Debug.LogError(INVALID_SCENEUNLOADDATA);
-            }
+                _networkManager.LogError(INVALID_SCENEUNLOADDATA);
+
 
             return result;
         }
@@ -2030,19 +2074,13 @@ namespace FishNet.Managing.Scened
             {
                 result = _networkManager.IsServer;
                 if (!result && warn)
-                {
-                    if (_networkManager.CanLog(LoggingType.Warning))
-                        Debug.LogWarning($"Method cannot be called as the server is not active.");
-                }
+                    _networkManager.LogWarning($"Method cannot be called as the server is not active.");
             }
             else
             {
                 result = _networkManager.IsClient;
                 if (!result && warn)
-                {
-                    if (_networkManager.CanLog(LoggingType.Warning))
-                        Debug.LogWarning($"Method cannot be called as the client is not active.");
-                }
+                    _networkManager.LogWarning($"Method cannot be called as the client is not active.");
             }
 
             return result;

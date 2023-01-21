@@ -13,6 +13,10 @@ namespace FishNet.Transporting.Tugboat
     [AddComponentMenu("FishNet/Transport/Tugboat")]
     public class Tugboat : Transport
     {
+        ~Tugboat()
+        {
+            Shutdown();
+        }
 
         #region Serialized.
         [Header("Channels")]
@@ -304,15 +308,8 @@ namespace FishNet.Transporting.Tugboat
         /// <param name="value"></param>
         public override void SetMaximumClients(int value)
         {
-            if (_server.GetConnectionState() != LocalConnectionState.Stopped)
-            {
-                if (base.NetworkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"Cannot set maximum clients when server is running.");
-            }
-            else
-            {
-                _maximumClients = value;
-            }
+            _maximumClients = value;
+            _server.SetMaximumClients(value);
         }
         /// <summary>
         /// Sets which address the client will connect to.
@@ -477,8 +474,7 @@ namespace FishNet.Transporting.Tugboat
         {
             if (channelId < 0 || channelId >= TransportManager.CHANNEL_COUNT)
             {
-                if (NetworkManager.CanLog(LoggingType.Warning))
-                    Debug.LogWarning($"Channel of {channelId} is out of range of supported channels. Channel will be defaulted to reliable.");
+                NetworkManager.LogWarning($"Channel of {channelId} is out of range of supported channels. Channel will be defaulted to reliable.");
                 channelId = 0;
             }
         }

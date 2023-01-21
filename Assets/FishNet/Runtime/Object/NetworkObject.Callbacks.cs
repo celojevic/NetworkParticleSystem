@@ -1,4 +1,5 @@
 ﻿using FishNet.Connection;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 
 namespace FishNet.Object
@@ -8,7 +9,8 @@ namespace FishNet.Object
         /// <summary>
         /// Called after all data is synchronized with this NetworkObject.
         /// </summary>
-        private void InitializeCallbacks(bool asServer)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void InitializeCallbacks(bool asServer, bool invokeSyncTypeCallbacks)
         {
             /* Note: When invoking OnOwnership here previous owner will
              * always be an empty connection, since the object is just
@@ -22,7 +24,7 @@ namespace FishNet.Object
 
             //Invoke OnStartNetwork.
             for (int i = 0; i < NetworkBehaviours.Length; i++)
-                NetworkBehaviours[i].InvokeOnNetwork(true);            
+                NetworkBehaviours[i].InvokeOnNetwork(true);
 
             //As server.
             if (asServer)
@@ -30,13 +32,9 @@ namespace FishNet.Object
                 for (int i = 0; i < NetworkBehaviours.Length; i++)
                     NetworkBehaviours[i].OnStartServer();
                 for (int i = 0; i < NetworkBehaviours.Length; i++)
-                    NetworkBehaviours[i].InvokeSyncTypeCallbacks(true);
-
-                if (Owner.IsValid)
-                {
-                    for (int i = 0; i < NetworkBehaviours.Length; i++)
-                        NetworkBehaviours[i].OnOwnershipServer(FishNet.Managing.NetworkManager.EmptyConnection);
-                }
+                    NetworkBehaviours[i].OnOwnershipServer(FishNet.Managing.NetworkManager.EmptyConnection);
+                if (invokeSyncTypeCallbacks)
+                    InvokeSyncTypeCallbacks(true);
             }
             //As client.
             else
@@ -44,14 +42,21 @@ namespace FishNet.Object
                 for (int i = 0; i < NetworkBehaviours.Length; i++)
                     NetworkBehaviours[i].OnStartClient();
                 for (int i = 0; i < NetworkBehaviours.Length; i++)
-                    NetworkBehaviours[i].InvokeSyncTypeCallbacks(false);
-
-                if (IsOwner)
-                {
-                    for (int i = 0; i < NetworkBehaviours.Length; i++)
-                        NetworkBehaviours[i].OnOwnershipClient(FishNet.Managing.NetworkManager.EmptyConnection);
-                }
+                    NetworkBehaviours[i].OnOwnershipClient(FishNet.Managing.NetworkManager.EmptyConnection);
+                if (invokeSyncTypeCallbacks)
+                    InvokeSyncTypeCallbacks(false);
             }
+        }
+
+
+        /// <summary>
+        /// Invokes pending SyncType callbacks.
+        /// </summary>
+        /// <param name="asServer"></param>
+        internal void InvokeSyncTypeCallbacks(bool asServer)
+        {
+            for (int i = 0; i < NetworkBehaviours.Length; i++)
+                NetworkBehaviours[i].InvokeSyncTypeCallbacks(asServer);
         }
 
         /// <summary>
@@ -122,8 +127,21 @@ namespace FishNet.Object
             }
             else
             {
-                for (int i = 0; i < NetworkBehaviours.Length; i++)
-                    NetworkBehaviours[i].OnOwnershipClient(prevOwner);
+                /* If local client is owner and not server then only
+                 * invoke if the prevOwner is different. This prevents
+                 * the owner change callback from happening twice when
+                 * using TakeOwnership. 
+                 * 
+                 * Further explained, the TakeOwnership sets local client
+                 * as owner client-side, which invokes the OnOwnership method.
+                 * Then when the server approves the owner change it would invoke
+                 * again, which is not needed. */
+                bool blockInvoke = ((IsOwner && !IsServer) && (prevOwner == Owner));
+                if (!blockInvoke)
+                {
+                    for (int i = 0; i < NetworkBehaviours.Length; i++)
+                        NetworkBehaviours[i].OnOwnershipClient(prevOwner);
+                }
             }
         }
     }

@@ -35,7 +35,17 @@ namespace FishNet.Connection
         /// <summary>
         /// True if connection has loaded start scenes. Available to this connection and server.
         /// </summary>
-        public bool LoadedStartScenes => (_loadedStartScenesAsServer || _loadedStartScenesAsClient);
+        public bool LoadedStartScenes() => (_loadedStartScenesAsServer || _loadedStartScenesAsClient);
+        /// <summary>
+        /// 
+        /// </summary>
+        public bool LoadedStartScenes(bool asServer)
+        {
+            if (asServer)
+                return _loadedStartScenesAsServer;
+            else
+                return _loadedStartScenesAsClient;
+        }
         /// <summary>
         /// True if loaded start scenes as server.
         /// </summary>
@@ -60,10 +70,6 @@ namespace FishNet.Connection
         /// Unique Id for this connection.
         /// </summary>
         public int ClientId = -1;
-        /// <summary>
-        /// Returns if this connection is for the local client.
-        /// </summary>
-        public bool IsLocalClient => (NetworkManager == null) ? false : (NetworkManager.ClientManager.Connection == this);
         /// <summary>
         /// 
         /// </summary>
@@ -94,14 +100,59 @@ namespace FishNet.Connection
         /// </summary>
         public object CustomData = null;
         /// <summary>
-        /// Local tick of the server when this connection last replicated.
+        /// Local tick when the connection last replicated.
         /// </summary>
         public uint LocalReplicateTick { get; internal set; }
         /// <summary>
         /// Tick of the last packet received from this connection.
         /// This value is only available on the server.
         /// </summary>
-        public uint LastPacketTick { get; internal set; }
+        /* This is not used internally. At this time it's just
+         * here for the users convienence. */
+        public uint LastPacketTick { get; private set; }
+        /// <summary>
+        /// Sets LastPacketTick value.
+        /// </summary>
+        /// <param name="value"></param>
+        internal void SetLastPacketTick(uint value)
+        {
+            //If new largest tick from the client then update client tick data.
+            if (value > LastPacketTick)
+            {
+                _latestTick = value;
+                _serverLatestTick = NetworkManager.TimeManager.Tick;
+            }
+            LastPacketTick = value;
+        }
+        /// <summary>
+        /// Latest tick that did not arrive out of order from this connection.
+        /// </summary>
+        private uint _latestTick;
+        /// <summary>
+        /// Tick on the server when latestTick was set.
+        /// </summary>
+        private uint _serverLatestTick;
+        [Obsolete("Use LocalTick instead.")] //Remove on 2023/06/01
+        public uint Tick => LocalTick;
+        /// <summary>
+        /// Current approximate local tick as it is on this connection.
+        /// </summary>
+        public uint LocalTick
+        {
+            get
+            {
+                NetworkManager nm = NetworkManager;
+                if (nm != null)
+                {
+                    uint diff = (nm.TimeManager.Tick - _serverLatestTick);
+                    return (diff + _latestTick);
+                }
+
+                //Fall through, could not process.
+                return 0;
+            }
+
+        }
         #endregion
 
         #region Comparers.
@@ -147,21 +198,32 @@ namespace FishNet.Connection
         [APIExclude]
         public NetworkConnection() { }
         [APIExclude]
-        public NetworkConnection(NetworkManager manager, int clientId)
+        public NetworkConnection(NetworkManager manager, int clientId, bool asServer)
         {
-            Initialize(manager, clientId);
+            Initialize(manager, clientId, asServer);
+        }
+
+        public void Dispose()
+        {
+            foreach (PacketBundle p in _toClientBundles)
+                p.Dispose();
+            _toClientBundles.Clear();
         }
 
         /// <summary>
         /// Initializes this for use.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void Initialize(NetworkManager nm, int clientId)
+        private void Initialize(NetworkManager nm, int clientId, bool asServer)
         {
             NetworkManager = nm;
             ClientId = clientId;
-            InitializeBuffer();
-            InitializePing();
+            //Only the server uses the ping and buffer.
+            if (asServer)
+            {
+                InitializeBuffer();
+                InitializePing();
+            }
         }
 
         /// <summary>
@@ -170,6 +232,9 @@ namespace FishNet.Connection
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void Reset()
         {
+            _latestTick = 0;
+            _serverLatestTick = 0;
+            LastPacketTick = 0;
             ClientId = -1;
             ClearObjects();
             Authenticated = false;

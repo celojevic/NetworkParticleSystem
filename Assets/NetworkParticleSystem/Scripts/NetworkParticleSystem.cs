@@ -18,6 +18,14 @@ namespace gooby.NetworkParticleSystem
     {
 
         [System.Serializable]
+        private struct NetParticle
+        {
+            public int Id;
+            public Vector3 Position;
+            public Vector3 Velocity;
+        }
+
+        [System.Serializable]
         private struct ParticleSyncData
         {
             public uint Seed;
@@ -26,6 +34,8 @@ namespace gooby.NetworkParticleSystem
 
             public override string ToString() => $"Seed: {Seed}, PS Time: {Time}, Server tick: {Tick}";
         }
+
+        private System.Random _prng = new System.Random();
 
         [Tooltip("True to sync particle system autoplay data over the network " +
             "so it appears the same to clients as it does on the server.")]
@@ -51,6 +61,16 @@ namespace gooby.NetworkParticleSystem
         /// </summary>
         private Particle[] _particles;
         public Particle[] Particles => _particles;
+        /// <summary>
+        /// Extra particle cache in case particles are modified, we can detect changes.
+        /// </summary>
+        private Particle[] _particleCache;
+
+        [SyncObject]
+        private readonly SyncDictionary<int, NetParticle> _changedParticles = new SyncDictionary<int, NetParticle>();
+
+        private readonly Dictionary<int, Particle> _livingParticles = new Dictionary<int, Particle>();
+        public Dictionary<int, Particle> LivingParticles => _livingParticles;
 
         /// <summary>
         /// Particle system custom data cache.
@@ -77,6 +97,9 @@ namespace gooby.NetworkParticleSystem
         public UnityEvent<int> OnParticleBirth;
         [Tooltip("Invokes the index in the particles array of the particle that died.")]
         public UnityEvent<int> OnParticleDeath;
+        [Tooltip("Invoked before particles are updated (in LateUpdate). " +
+            "Use this event to modify position, velocity, etc. of a particle.")]
+        public UnityEvent OnParticleUpdate;
 
         [Header("Debug")]
         [Tooltip("Debug log level.")]
@@ -87,7 +110,22 @@ namespace gooby.NetworkParticleSystem
             _particles = new Particle[_particleSystem.main.maxParticles];
         }
 
-        private void LateUpdate()
+        public override void OnStartNetwork()
+        {
+            base.OnStartNetwork();
+
+            TimeManager.OnLateUpdate += TimeManager_OnLateUpdate;
+        }
+
+        public override void OnStopNetwork()
+        {
+            base.OnStopNetwork();
+
+            if (TimeManager!=null)
+                TimeManager.OnLateUpdate += TimeManager_OnLateUpdate;
+        }
+
+        private void TimeManager_OnLateUpdate()
         {
             if (IsServer && _syncAllParticles)
             {
@@ -95,8 +133,7 @@ namespace gooby.NetworkParticleSystem
 
                 if (_particleCount > 0)
                 {
-                    // very spammy
-                    //Debug.Log($"Particle count: {_particleCount}");
+                    OnParticleUpdate?.Invoke();
 
                     for (int i = 0; i < _particleCount; i++)
                     {
@@ -107,7 +144,7 @@ namespace gooby.NetworkParticleSystem
                             _customData[i] = new Vector4(id, 0, 0, 0);
 
                             if (_logLevel >= LoggingType.Common)
-                                Debug.Log($"Particle index {i} NEW ID: {_customData[i].x}");
+                                Debug.Log($"Particle BORN, index {i}, NEW ID: {_customData[i].x}");
 
 #pragma warning disable 0618
                             RpcEmit(_particles[i].position, _particles[i].velocity,
@@ -115,8 +152,10 @@ namespace gooby.NetworkParticleSystem
                                 id);
 #pragma warning restore 0618
 
+                            _livingParticles.Add(id, _particles[i]);
                             OnParticleBirth?.Invoke(i);
                         }
+                        // particle died
                         else if (_particles[i].remainingLifetime <= 0f)
                         {
                             OnParticleDeath?.Invoke(i);
@@ -124,13 +163,42 @@ namespace gooby.NetworkParticleSystem
                             if (_logLevel >= LoggingType.Common)
                                 Debug.Log($"Particle DEAD, index {i} ID: {_customData[i].x}");
 
-                            RpcKill((int)_customData[i].x);
+                            int particleId = (int)_customData[i].x;
+                            _livingParticles.Remove(particleId);
+                            RpcKill(particleId);
                             _customData[i] = Vector4.zero;
                         }
+
+                        //DetectParticleChanges(i);
                     }
 
                     SetParticleData();
+                    _changedParticles.Clear();
                 }
+            }
+        }
+
+        private void DetectParticleChanges(int i)
+        {
+            NetParticle netParticle = new NetParticle();
+
+            if (_particles[i].position != _particleCache[i].position)
+            {
+                netParticle.Position = _particles[i].position;
+                Debug.Log("Particle pos changed ");
+            }
+
+            if (_particles[i].velocity != _particleCache[i].velocity)
+            {
+                netParticle.Velocity = _particles[i].velocity;
+                Debug.Log("Particle vel changed "+netParticle.Velocity);
+            }
+
+            if (!netParticle.Equals(default))
+            {
+                netParticle.Id = (int)_customData[i].x;
+                // multiple same keys, value 0, maybe after kill
+                _changedParticles.Add(netParticle.Id, netParticle);
             }
         }
 
@@ -178,7 +246,8 @@ namespace gooby.NetworkParticleSystem
         }
 
         /// <summary>
-        /// Invokes particle collision events.
+        /// Invokes particle collision events. 
+        /// Make sure you have "Send Collision Messages" enabled in the particle system's collision module.
         /// </summary>
         /// <param name="other"></param>
         private void InvokeParticleCollision(GameObject other)
@@ -217,12 +286,16 @@ namespace gooby.NetworkParticleSystem
             }
         }
 
+        /// <summary>
+        /// Finds a particle by ID and kills it.
+        /// </summary>
+        /// <param name="id"></param>
         [ObserversRpc]
         void RpcKill(int id)
         {
             if (IsServer) return;
 
-            //Debug.Log("Killing particle ID: " + id);
+            Debug.Log("Killing particle ID: " + id);
             GetParticleData();
 
             for (int i = 0; i < _particleCount; i++)
@@ -241,11 +314,31 @@ namespace gooby.NetworkParticleSystem
             SetParticleData();
         }
 
+        /// <summary>
+        /// Emits a particle with parameters.
+        /// </summary>
+        /// <param name="pos">Particle position.</param>
+        /// <param name="vel">Particle velocity.</param>
+        /// <param name="size">Particle size.</param>
+        /// <param name="lifetime">Particle lifetime.</param>
+        /// <param name="color">Particle color.</param>
+        /// <param name="id">Particle ID.</param>
         [ObserversRpc]
         void RpcEmit(Vector3 pos, Vector3 vel, float size, float lifetime, Color32 color, int id)
         {
             Emit(pos, vel, size, lifetime, color, id);
         }
+
+        /// <summary>
+        /// Emits a particle with parameters.
+        /// </summary>
+        /// <param name="conn"></param>
+        /// <param name="pos"></param>
+        /// <param name="vel"></param>
+        /// <param name="size"></param>
+        /// <param name="lifetime"></param>
+        /// <param name="color"></param>
+        /// <param name="id"></param>
         [TargetRpc]
         void TargetEmit(NetworkConnection conn, Vector3 pos, Vector3 vel, float size, float lifetime, Color32 color, int id)
         {
@@ -254,6 +347,17 @@ namespace gooby.NetworkParticleSystem
 
             Emit(pos, vel, size, lifetime, color, id);
         }
+
+        /// <summary>
+        /// Emits a particle with params and caches its data.
+        /// </summary>
+        /// <param name="pos"></param>
+        /// <param name="vel"></param>
+        /// <param name="size"></param>
+        /// <param name="lifetime"></param>
+        /// <param name="color"></param>
+        /// <param name="id"></param>
+        [Client]
         void Emit(Vector3 pos, Vector3 vel, float size, float lifetime, Color32 color, int id)
         {
             if (IsServer) return;
@@ -263,6 +367,7 @@ namespace gooby.NetworkParticleSystem
             _particleSystem.Emit(pos, vel, size, lifetime, color);
 #pragma warning restore 0618
 
+            Debug.Log("Emitting particle at " + pos);
             GetParticleData();
 
             for (int i = 0; i < _particleCount; i++)
@@ -290,7 +395,8 @@ namespace gooby.NetworkParticleSystem
         /// <returns></returns>
         int GetUniqueID()
         {
-            return Animator.StringToHash(System.Guid.NewGuid().ToString());
+            return _prng.Next();
+            //return Animator.StringToHash(System.Guid.NewGuid().ToString());
         }
 
         /// <summary>
@@ -301,6 +407,7 @@ namespace gooby.NetworkParticleSystem
         public int GetParticleData()
         {
             _particleCount = _particleSystem.GetParticles(_particles);
+            _particleCache = _particles;
             _particleSystem.GetCustomParticleData(_customData, ParticleSystemCustomData.Custom2);
 
             return _particleCount;

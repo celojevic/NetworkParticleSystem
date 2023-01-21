@@ -43,6 +43,11 @@ namespace FishNet.Managing.Scened
         /// Returns the scene name without a directory path should one exist.
         /// </summary>
         public string NameOnly => System.IO.Path.GetFileNameWithoutExtension(Name);
+        /// <summary>
+        /// Returns if this data is valid for use.
+        /// Being valid does not mean that the scene exist, rather that there is enough data to try and lookup a scene.
+        /// </summary>
+        public bool IsValid => (Name != string.Empty || Handle != 0);
 
         #region Const
         /// <summary>
@@ -224,10 +229,8 @@ namespace FishNet.Managing.Scened
             }
 
             if (invalidFound)
-            {
-                if (NetworkManager.StaticCanLog(LoggingType.Warning))
-                    Debug.LogWarning(INVALID_SCENE);
-            }
+                NetworkManager.StaticLogWarning(INVALID_SCENE);
+
             return result.ToArray();
         }
         /// <summary>
@@ -252,10 +255,8 @@ namespace FishNet.Managing.Scened
             }
 
             if (invalidFound)
-            {
-                if (NetworkManager.StaticCanLog(LoggingType.Warning))
-                    Debug.LogWarning(INVALID_SCENE);
-            }
+                NetworkManager.StaticLogWarning(INVALID_SCENE);
+
             return result.ToArray();
         }
         /// <summary>
@@ -279,10 +280,8 @@ namespace FishNet.Managing.Scened
             }
 
             if (invalidFound)
-            {
-                if (NetworkManager.StaticCanLog(LoggingType.Warning))
-                    Debug.LogWarning(INVALID_SCENE);
-            }
+                NetworkManager.StaticLogWarning(INVALID_SCENE);
+
             return result.ToArray();
         }
         #endregion
@@ -298,8 +297,7 @@ namespace FishNet.Managing.Scened
 
             if (Handle == 0 && string.IsNullOrEmpty(Name))
             {
-                if (NetworkManager.StaticCanLog(LoggingType.Warning))
-                    Debug.LogWarning("Scene handle and name is unset; scene cannot be returned.");
+                NetworkManager.StaticLogWarning("Scene handle and name is unset; scene cannot be returned.");
                 return default;
             }
 

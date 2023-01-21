@@ -59,12 +59,6 @@ namespace FishNet.Managing.Server
 
         #region Serialized.
         /// <summary>
-        /// 
-        /// </summary>
-        [Tooltip("Authenticator for this ServerManager. May be null if not using authentication.")]
-        [SerializeField]
-        private Authenticator _authenticator;
-        /// <summary>
         /// Authenticator for this ServerManager. May be null if not using authentication.
         /// </summary>
         [Obsolete("Use GetAuthenticator and SetAuthenticator.")]
@@ -87,6 +81,9 @@ namespace FishNet.Managing.Server
             _authenticator = value;
             InitializeAuthenticator();
         }
+        [Tooltip("Authenticator for this ServerManager. May be null if not using authentication.")]
+        [SerializeField]
+        private Authenticator _authenticator;
         /// <summary>
         /// How to pack object spawns.
         /// </summary>
@@ -105,42 +102,46 @@ namespace FishNet.Managing.Server
         [SerializeField]
         private bool _changeFrameRate = true;
         /// <summary>
-        ///  
+        /// Maximum frame rate the server may run at. When as host this value runs at whichever is higher between client and server.
         /// </summary>
+        internal ushort FrameRate => (_changeFrameRate) ? _frameRate : (ushort)0;
         [Tooltip("Maximum frame rate the server may run at. When as host this value runs at whichever is higher between client and server.")]
         [Range(1, NetworkManager.MAXIMUM_FRAMERATE)]
         [SerializeField]
         private ushort _frameRate = NetworkManager.MAXIMUM_FRAMERATE;
         /// <summary>
-        /// Maximum frame rate the server may run at. When as host this value runs at whichever is higher between client and server.
+        /// True to share the Ids of clients and the objects they own with other clients. No sensitive information is shared.
         /// </summary>
-        internal ushort FrameRate => (_changeFrameRate) ? _frameRate : (ushort)0;
-        /// <summary>
-        /// 
-        /// </summary>
+        internal bool ShareIds => _shareIds;
         [Tooltip("True to share the Ids of clients and the objects they own with other clients. No sensitive information is shared.")]
         [SerializeField]
         private bool _shareIds = true;
         /// <summary>
-        /// True to share the Ids of clients and the objects they own with other clients. No sensitive information is shared.
+        /// Gets StartOnHeadless value.
         /// </summary>
-        internal bool ShareIds => _shareIds;
+        public bool GetStartOnHeadless() => _startOnHeadless;
         /// <summary>
-        /// True to automatically start the server connection when running as headless.
+        /// Sets StartOnHeadless value.
         /// </summary>
+        /// <param name="value">New value to use.</param>
+        public void SetStartOnHeadless(bool value) => _startOnHeadless = value;
         [Tooltip("True to automatically start the server connection when running as headless.")]
         [SerializeField]
         private bool _startOnHeadless = true;
         /// <summary>
-        /// 
+        /// True to kick clients which send data larger than the MTU.
         /// </summary>
+        internal bool LimitClientMTU => _limitClientMTU;
         [Tooltip("True to kick clients which send data larger than the MTU.")]
         [SerializeField]
         private bool _limitClientMTU = true;
         /// <summary>
-        /// True to kick clients which send data larger than the MTU.
+        /// True to allow clients to use predicted spawning. While true, each NetworkObject prefab you wish to predicted spawn must be marked as to allow this feature.
         /// </summary>
-        internal bool LimitClientMTU => _limitClientMTU;
+        internal bool GetAllowPredictedSpawning() => _allowPredictedSpawning;
+        [Tooltip("True to allow clients to use predicted spawning and despawning. While true, each NetworkObject prefab you wish to predicted spawn must be marked as to allow this feature.")]
+        [SerializeField]
+        private bool _allowPredictedSpawning = true;
         #endregion
 
         #region Private.
@@ -165,7 +166,7 @@ namespace FishNet.Managing.Server
         /// Initializes this script for use.
         /// </summary>
         /// <param name="manager"></param>
-        internal void InitializeOnceInternal(NetworkManager manager)
+        internal void InitializeOnce_Internal(NetworkManager manager)
         {
             NetworkManager = manager;
             Objects = new ServerObjects(manager);
@@ -203,7 +204,7 @@ namespace FishNet.Managing.Server
         /// </summary>
         internal void StartForHeadless()
         {
-            if (_startOnHeadless)
+            if (GetStartOnHeadless())
             {
                 //Wrapping logic in check instead of everything so _startOnHeadless doesnt warn as unused in editor.
 #if UNITY_SERVER
@@ -361,8 +362,11 @@ namespace FishNet.Managing.Server
             NetworkManager.ClientManager.Objects.OnServerConnectionState(args);
             //If no servers are started then reset match conditions.
             if (!Started)
+            {
                 MatchCondition.ClearMatchesWithoutRebuilding();
-
+                //Despawn without synchronizing network objects.
+                Objects.DespawnWithoutSynchronization(true);
+            }
             Objects.OnServerConnectionState(args);
 
             LocalConnectionState state = args.ConnectionState;
@@ -371,7 +375,7 @@ namespace FishNet.Managing.Server
             {
                 Transport t = NetworkManager.TransportManager.GetTransport(args.TransportIndex);
                 string tName = (t == null) ? "Unknown" : t.GetType().Name;
-                Debug.Log($"Local Server is {state.ToString().ToLower()} for {tName}.");
+                Debug.Log($"Local server is {state.ToString().ToLower()} for {tName}.");
             }
 
             NetworkManager.UpdateFramerate();
@@ -388,8 +392,7 @@ namespace FishNet.Managing.Server
             int maxIdValue = short.MaxValue;
             if (id < 0 || id > maxIdValue)
             {
-                NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
-                NetworkManager.LogError($"The transport you are using supplied an invalid connection Id of {id}. Connection Id values must range between 0 and {maxIdValue}. The client has been disconnected.");
+                Kick(args.ConnectionId, KickReason.UnexpectedProblem, LoggingType.Error, $"The transport you are using supplied an invalid connection Id of {id}. Connection Id values must range between 0 and {maxIdValue}. The client has been disconnected.");
                 return;
             }
             //Valid Id.
@@ -399,9 +402,8 @@ namespace FishNet.Managing.Server
                 if (args.ConnectionState == RemoteConnectionState.Started)
                 {
                     NetworkManager.Log($"Remote connection started for Id {id}.");
-                    NetworkConnection conn = new NetworkConnection(NetworkManager, id);
+                    NetworkConnection conn = new NetworkConnection(NetworkManager, id, true);
                     Clients.Add(args.ConnectionId, conn);
-
                     OnRemoteConnectionState?.Invoke(conn, args);
                     //Connection is no longer valid. This can occur if the user changes the state using the OnRemoteConnectionState event.
                     if (!conn.IsValid)
@@ -539,21 +541,17 @@ namespace FishNet.Managing.Server
                      * Force an immediate disconnect. */
                     if (!Clients.TryGetValueIL2CPP(args.ConnectionId, out conn))
                     {
-                        if (NetworkManager.CanLog(LoggingType.Common))
-                            Debug.LogError($"ConnectionId {conn.ClientId} not found within Clients. Connection will be kicked immediately.");
-                        NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
+                        Kick(args.ConnectionId, KickReason.UnexpectedProblem, LoggingType.Error, $"ConnectionId {conn.ClientId} not found within Clients. Connection will be kicked immediately.");
                         return;
                     }
-                    conn.LastPacketTick = tick;
+                    conn.SetLastPacketTick(tick);
                     /* If connection isn't authenticated and isn't a broadcast
                      * then disconnect client. If a broadcast then process
                      * normally; client may still become disconnected if the broadcast
                      * does not allow to be called while not authenticated. */
                     if (!conn.Authenticated && packetId != PacketId.Broadcast)
                     {
-                        if (NetworkManager.CanLog(LoggingType.Common))
-                            Debug.LogError($"ConnectionId {conn.ClientId} send a Broadcast without being authenticated. Connection will be kicked immediately.");
-                        conn.Disconnect(true);
+                        conn.Kick(KickReason.ExploitAttempt, LoggingType.Common, $"ConnectionId {conn.ClientId} send a Broadcast without being authenticated. Connection will be kicked immediately.");
                         return;
                     }
 
@@ -575,16 +573,13 @@ namespace FishNet.Managing.Server
                     }
                     else
                     {
-                        if (NetworkManager.CanLog(LoggingType.Error))
-                        {
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-                            Debug.LogError($"Server received an unhandled PacketId of {(ushort)packetId} from connectionId {args.ConnectionId}. Remaining data has been purged.");
-                            _parseLogger.Print(NetworkManager);
+                        NetworkManager.LogError($"Server received an unhandled PacketId of {(ushort)packetId} from connectionId {args.ConnectionId}. Remaining data has been purged.");
+                        _parseLogger.Print(NetworkManager);
 #else
-                            Debug.LogError($"Server received an unhandled PacketId of {(ushort)packetId} from connectionId {args.ConnectionId}. Connection will be kicked immediately.");
-                            NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
+                        NetworkManager.LogError($"Server received an unhandled PacketId of {(ushort)packetId} from connectionId {args.ConnectionId}. Connection will be kicked immediately.");
+                        NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
 #endif
-                        }
                         return;
                     }
                 }
@@ -593,19 +588,14 @@ namespace FishNet.Managing.Server
             }
             catch (Exception e)
             {
-                if (NetworkManager.CanLog(LoggingType.Error))
-                    Debug.LogError($"Server encountered an error while parsing data for packetId {packetId} from connectionId {args.ConnectionId}. Connection will be kicked immediately. Message: {e.Message}.");
-                //Kick client immediately.
-                NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
+                Kick(args.ConnectionId, KickReason.MalformedData, LoggingType.Error, $"Server encountered an error while parsing data for packetId {packetId} from connectionId {args.ConnectionId}. Connection will be kicked immediately. Message: {e.Message}.");
             }
 #endif
 
             //Kicks connection for exceeding MTU.
             void ExceededMTUKick()
             {
-                NetworkManager.TransportManager.Transport.StopConnection(args.ConnectionId, true);
-                if (NetworkManager.CanLog(LoggingType.Common))
-                    Debug.Log($"ConnectionId {args.ConnectionId} sent a message larger than allowed amount. Connection will be kicked immediately.");
+                Kick(args.ConnectionId, KickReason.ExploitExcessiveData, LoggingType.Common, $"ConnectionId {args.ConnectionId} sent a message larger than allowed amount. Connection will be kicked immediately.");
             }
 
         }
@@ -673,8 +663,7 @@ namespace FishNet.Managing.Server
                 if (connected)
                 {
                     //Send already connected clients to the connection that just joined.
-                    ListCache<int> lc = ListCaches.IntCache;
-                    lc.Reset();
+                    ListCache<int> lc = ListCaches.GetIntCache();
                     foreach (int key in Clients.Keys)
                         lc.AddValue(key);
 
@@ -683,6 +672,7 @@ namespace FishNet.Managing.Server
                         ListCache = lc
                     };
                     conn.Broadcast(allMsg);
+                    ListCaches.StoreCache(lc);
                 }
             }
             //If not sharing Ids then only send ConnectionChange to conn.

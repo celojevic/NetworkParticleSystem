@@ -132,7 +132,7 @@ namespace FishNet.Managing.Transporting
         /// <summary>
         /// Initializes this script for use.
         /// </summary>
-        internal void InitializeOnceInternal(NetworkManager manager)
+        internal void InitializeOnce_Internal(NetworkManager manager)
         {
             _networkManager = manager;
             /* If transport isn't specified then add default
@@ -304,8 +304,7 @@ namespace FishNet.Managing.Transporting
         {
             if (requiredMessages <= 1)
             {
-                if (_networkManager.CanLog(LoggingType.Error))
-                    Debug.LogError($"SendSplitData was called with {requiredMessages} required messages. This method should only be called if messages must be split into 2 pieces or more.");
+                _networkManager.LogError($"SendSplitData was called with {requiredMessages} required messages. This method should only be called if messages must be split into 2 pieces or more.");
                 return;
             }
 
@@ -320,7 +319,6 @@ namespace FishNet.Managing.Transporting
             //Send to connection until everything is written.
             while (writeIndex < segment.Count)
             {
-                bool wasFirst = firstWrite;
                 int headerReduction = 0;
                 if (firstWrite)
                 {

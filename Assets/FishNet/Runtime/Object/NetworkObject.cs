@@ -3,7 +3,6 @@ using FishNet.Connection;
 using UnityEngine;
 using FishNet.Serializing;
 using FishNet.Transporting;
-using FishNet.Managing.Logging;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using FishNet.Utility.Performance;
@@ -30,8 +29,6 @@ namespace FishNet.Object
         /// </summary>
         /// <returns></returns>
         public bool IsSceneObject => (SceneId > 0);
-        [Obsolete("Use IsSceneObject instead.")] //Remove on 2023/01/01
-        public bool SceneObject => IsSceneObject;
         /// <summary>
         /// ComponentIndex for this NetworkBehaviour.
         /// </summary>
@@ -81,12 +78,6 @@ namespace FishNet.Object
 
         #region Serialized.
         /// <summary>
-        /// 
-        /// </summary>
-        [Tooltip("True if the object will always initialize as a networked object. When false the object will not automatically initialize over the network. Using Spawn() on an object will always set that instance as networked.")]
-        [SerializeField]
-        private bool _isNetworked = true;
-        /// <summary>
         /// True if the object will always initialize as a networked object. When false the object will not automatically initialize over the network. Using Spawn() on an object will always set that instance as networked.
         /// </summary>
         public bool IsNetworked
@@ -102,12 +93,9 @@ namespace FishNet.Object
         {
             IsNetworked = value;
         }
-        /// <summary>
-        /// 
-        /// </summary>
-        [Tooltip("True to make this object global, and added to the DontDestroyOnLoad scene. This value may only be set for instantiated objects, and can be changed if done immediately after instantiating.")]
+        [Tooltip("True if the object will always initialize as a networked object. When false the object will not automatically initialize over the network. Using Spawn() on an object will always set that instance as networked.")]
         [SerializeField]
-        private bool _isGlobal;
+        private bool _isNetworked = true;
         /// <summary>
         /// True to make this object global, and added to the DontDestroyOnLoad scene. This value may only be set for instantiated objects, and can be changed if done immediately after instantiating.
         /// </summary>
@@ -124,26 +112,41 @@ namespace FishNet.Object
         {
             if (IsNested)
             {
-                if (NetworkManager.StaticCanLog(LoggingType.Warning))
-                    Debug.LogWarning($"Object {gameObject.name} cannot change IsGlobal because it is nested. Only root objects may be set global.");
+                NetworkManager.StaticLogWarning($"Object {gameObject.name} cannot change IsGlobal because it is nested. Only root objects may be set global.");
+                return;
             }
             if (!IsDeinitializing)
             {
-                if (NetworkManager.StaticCanLog(LoggingType.Warning))
-                    Debug.LogWarning($"Object {gameObject.name} cannot change IsGlobal as it's already initialized. IsGlobal may only be changed immediately after instantiating.");
+                NetworkManager.StaticLogWarning($"Object {gameObject.name} cannot change IsGlobal as it's already initialized. IsGlobal may only be changed immediately after instantiating.");
                 return;
             }
             if (IsSceneObject)
             {
-                if (NetworkManager.StaticCanLog(LoggingType.Warning))
-                    Debug.LogWarning($"Object {gameObject.name} cannot have be global because it is a scene object. Only instantiated objects may be global.");
+                NetworkManager.StaticLogWarning($"Object {gameObject.name} cannot have be global because it is a scene object. Only instantiated objects may be global.");
                 return;
             }
 
             _networkObserverInitiliazed = false;
             IsGlobal = value;
         }
-
+        [Tooltip("True to make this object global, and added to the DontDestroyOnLoad scene. This value may only be set for instantiated objects, and can be changed if done immediately after instantiating.")]
+        [SerializeField]
+        private bool _isGlobal;
+        /// <summary>
+        /// Order to initialize this object's callbacks when spawned with other NetworkObjects in the same tick. Default value is 0, negative values will execute callbacks first.
+        /// </summary>
+        public sbyte GetInitializeOrder() => _initializeOrder;
+        [Tooltip("Order to initialize this object's callbacks when spawned with other NetworkObjects in the same tick. Default value is 0, negative values will execute callbacks first.")]
+        [SerializeField]
+        private sbyte _initializeOrder = 0;
+        /// <summary>
+        /// Returns the predicted spawning permissions for this prefab.
+        /// </summary>
+        /// <returns>Permissions.</returns>
+        public PredictedSpawningType GetPredictedSpawningType() => _predictedSpawningType;
+        [Tooltip("True to allow this object be predicted spawned.")]
+        [SerializeField]
+        private PredictedSpawningType _predictedSpawningType = PredictedSpawningType.Disabled;
         /// <summary>
         /// How to handle this object when it despawns. Scene objects are never destroyed when despawning.
         /// </summary>
@@ -185,9 +188,6 @@ namespace FishNet.Object
         private void Start()
         {
             TryStartDeactivation();
-            ////Also deactivate children.
-            //foreach (NetworkObject nob in ChildNetworkObjects)
-            //    nob.TryStartDeactivation();
         }
 
         /// <summary>
@@ -354,7 +354,7 @@ namespace FishNet.Object
         /// </summary>
         /// <param name="networkManager"></param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal void PreinitializeInternal(NetworkManager networkManager, int objectId, NetworkConnection owner, bool asServer)
+        internal void Preinitialize_Internal(NetworkManager networkManager, int objectId, NetworkConnection owner, bool asServer)
         {
             State = NetworkObjectState.Spawned;
             InitializeNetworkBehavioursIfDisabled();
@@ -367,6 +367,7 @@ namespace FishNet.Object
             TransportManager = networkManager.TransportManager;
             TimeManager = networkManager.TimeManager;
             SceneManager = networkManager.SceneManager;
+            PredictionManager = networkManager.PredictionManager;
             RollbackManager = networkManager.RollbackManager;
 
             SetOwner(owner);
@@ -379,12 +380,12 @@ namespace FishNet.Object
             AddDefaultNetworkObserverConditions();
 
             for (int i = 0; i < NetworkBehaviours.Length; i++)
-                NetworkBehaviours[i].InitializeOnceInternal();
+                NetworkBehaviours[i].InitializeOnce_Internal();
 
             /* NetworkObserver uses some information from
              * NetworkBehaviour so it must be preinitialized
              * after NetworkBehaviours are. */
-            if (asServer && NetworkObserver != null)
+            if (asServer)
                 NetworkObserver.PreInitialize(this);
             _networkObserverInitiliazed = true;
 
@@ -511,9 +512,10 @@ namespace FishNet.Object
         /// <summary>
         /// Called after all data is synchronized with this NetworkObject.
         /// </summary>
-        internal void Initialize(bool asServer)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal void Initialize(bool asServer, bool invokeSyncTypeCallbacks)
         {
-            InitializeCallbacks(asServer);
+            InitializeCallbacks(asServer, invokeSyncTypeCallbacks);
         }
 
         /// <summary>
@@ -552,6 +554,7 @@ namespace FishNet.Object
 
             State = NetworkObjectState.Unset;
             SetOwner(NetworkManager.EmptyConnection);
+            NetworkObserver.Deinitialize();
             //QOL references.
             NetworkManager = null;
             ServerManager = null;
@@ -562,7 +565,6 @@ namespace FishNet.Object
             SceneManager = null;
             RollbackManager = null;
             //Misc sets.
-            NetworkObserver?.Deinitialize();
             ObjectId = -1;
             ClientInitialized = false;
         }
@@ -594,8 +596,7 @@ namespace FishNet.Object
             {
                 if (!NetworkManager.IsServer)
                 {
-                    if (NetworkManager.CanLog(LoggingType.Warning))
-                        Debug.LogWarning($"Ownership cannot be given for object {gameObject.name}. Only server may give ownership.");
+                    NetworkManager.LogWarning($"Ownership cannot be given for object {gameObject.name}. Only server may give ownership.");
                     return;
                 }
 
@@ -603,10 +604,9 @@ namespace FishNet.Object
                 if (newOwner == Owner && asServer)
                     return;
 
-                if (newOwner != null && newOwner.IsActive && !newOwner.LoadedStartScenes)
+                if (newOwner != null && newOwner.IsActive && !newOwner.LoadedStartScenes(true))
                 {
-                    if (NetworkManager.CanLog(LoggingType.Warning))
-                        Debug.LogWarning($"Ownership has been transfered to ConnectionId {newOwner.ClientId} but this is not recommended until after they have loaded start scenes. You can be notified when a connection loads start scenes by using connection.OnLoadedStartScenes on the connection, or SceneManager.OnClientLoadStartScenes.");
+                    NetworkManager.LogWarning($"Ownership has been transfered to ConnectionId {newOwner.ClientId} but this is not recommended until after they have loaded start scenes. You can be notified when a connection loads start scenes by using connection.OnLoadedStartScenes on the connection, or SceneManager.OnClientLoadStartScenes.");
                 }
             }
 
@@ -711,6 +711,18 @@ namespace FishNet.Object
 
         #region Editor.
 #if UNITY_EDITOR
+        /// <summary>
+        /// Removes duplicate NetworkObject components on this object returning the removed count.
+        /// </summary>
+        /// <returns></returns>
+        internal int RemoveDuplicateNetworkObjects()
+        {
+            NetworkObject[] nobs = GetComponents<NetworkObject>();
+            for (int i = 1; i < nobs.Length; i++)
+                DestroyImmediate(nobs[i]);
+
+            return (nobs.Length - 1);
+        }
 
         /// <summary>
         /// Sets IsNested and returns the result.

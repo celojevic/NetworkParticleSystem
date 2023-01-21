@@ -3,6 +3,7 @@ using FishNet.Documenting;
 using FishNet.Managing;
 using FishNet.Managing.Logging;
 using FishNet.Object;
+using FishNet.Object.Prediction;
 using FishNet.Serializing.Helping;
 using FishNet.Transporting;
 using FishNet.Utility.Constant;
@@ -764,7 +765,6 @@ namespace FishNet.Serializing
             return ReadNetworkObject(out _);
         }
 
-
         /// <summary>
         /// Reads a NetworkObject.
         /// </summary>
@@ -776,8 +776,8 @@ namespace FishNet.Serializing
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             LastNetworkBehaviour = null;
 #endif
-            bool isSpawned = ReadBoolean();
             objectOrPrefabId = ReadInt16();
+            bool isSpawned;
             /* -1 indicates that the object
              * is null or no PrefabId is set.
              * PrefabIds are set in Awake within
@@ -785,6 +785,8 @@ namespace FishNet.Serializing
              * never happen so long as nob isn't null. */
             if (objectOrPrefabId == -1)
                 return null;
+            else
+                isSpawned = ReadBoolean();
 
             bool isServer = NetworkManager.ServerManager.Started;
             bool isClient = NetworkManager.ClientManager.Started;
@@ -814,13 +816,81 @@ namespace FishNet.Serializing
                 //Only look up asServer if not client, otherwise use client.
                 bool asServer = !isClient;
                 //Look up prefab.
-                result = NetworkManager.GetPooledInstantiated(objectOrPrefabId, asServer);
+                result = NetworkManager.GetPrefab(objectOrPrefabId, asServer);
             }
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             LastNetworkObject = result;
 #endif
             return result;
+        }
+
+        /// <summary>
+        /// Reads a NetworkObjectId and nothing else.
+        /// </summary>
+        /// <returns></returns>
+        [CodegenExclude]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int ReadNetworkObjectId()
+        {
+            return ReadInt16();
+        }
+
+        /// <summary>
+        /// Reads the Id for a NetworkObject and outputs spawn settings.
+        /// </summary>
+        /// <returns></returns>
+        [CodegenExclude]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal int ReadNetworkObjectForSpawn(out sbyte initializeOrder, out ushort collectionid)
+        {
+            int id = ReadInt16();
+
+            bool isNull = (id == -1);
+            if (isNull)
+            {
+                initializeOrder = 0;
+                collectionid = 0;
+            }
+            else
+            {
+                collectionid = ReadUInt16();
+                initializeOrder = ReadSByte();
+                //Clear spawned.
+                ReadBoolean();
+            }
+
+            return id;
+        }
+
+
+        /// <summary>
+        /// Reads the Id for a NetworkObject and outputs despawn settings.
+        /// </summary>
+        /// <returns></returns>
+        [CodegenExclude]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal int ReadNetworkObjectForDepawn(out DespawnType dt)
+        {
+            int id = ReadInt16();
+            dt = (DespawnType)ReadByte();
+            return id;
+        }
+
+
+        /// <summary>
+        /// Reads a NetworkBehaviourId and ObjectId.
+        /// </summary>
+        /// <returns></returns>
+        [CodegenExclude]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal byte ReadNetworkBehaviourId(out int objectId)
+        {
+            objectId = ReadNetworkObjectId();
+            if (objectId != -1)
+                return ReadByte();
+            else
+                return 0;
         }
 
         /// <summary>
@@ -843,8 +913,7 @@ namespace FishNet.Serializing
             {
                 if (componentIndex >= nob.NetworkBehaviours.Length)
                 {
-                    if (NetworkManager.CanLog(LoggingType.Error))
-                        Debug.LogError($"ComponentIndex of {componentIndex} is out of bounds on {nob.gameObject.name} [id {nob.ObjectId}]. This may occur if you have modified your gameObject/prefab without saving it, or the scene.");
+                    NetworkManager.LogError($"ComponentIndex of {componentIndex} is out of bounds on {nob.gameObject.name} [id {nob.ObjectId}]. This may occur if you have modified your gameObject/prefab without saving it, or the scene.");
                     result = null;
                 }
                 else
@@ -870,7 +939,19 @@ namespace FishNet.Serializing
         }
 
         /// <summary>
-        /// Writes a transport channel.
+        /// Reads a DateTime.
+        /// </summary>
+        /// <param name="dt"></param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public DateTime ReadDateTime()
+        {
+            DateTime result = DateTime.FromBinary(ReadInt64());
+            return result;
+        }
+
+
+        /// <summary>
+        /// Reads a transport channel.
         /// </summary>
         /// <param name="channel"></param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -887,19 +968,6 @@ namespace FishNet.Serializing
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int ReadNetworkConnectionId()
         {
-            return ReadInt16();
-        }
-
-        /// <summary>
-        /// Reads the Id for a NetworkObject.
-        /// </summary>
-        /// <returns></returns>
-        [CodegenExclude]
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int ReadNetworkObjectId()
-        {
-            //Clear spawned.
-            ReadBoolean();
             return ReadInt16();
         }
 
@@ -931,16 +999,18 @@ namespace FishNet.Serializing
                         //If found in client collection then return.
                         if (NetworkManager.ClientManager.Clients.TryGetValueIL2CPP(value, out result))
                             return result;
-                        //Otherwise make a new instance.
+                        /* Otherwise make a new instance.
+                         * We do not know if this is for the server or client so
+                         * initialize it either way. Connections rarely come through
+                         * without being in server/client side collection. */
                         else
-                            return new NetworkConnection(NetworkManager, value);
+                            return new NetworkConnection(NetworkManager, value, true);
 
                     }
                     //Only server and not found.
                     else
                     {
-                        if (NetworkManager.CanLog(LoggingType.Warning))
-                            Debug.LogWarning($"Unable to find connection for read Id {value}. An empty connection will be returned.");
+                        NetworkManager.LogWarning($"Unable to find connection for read Id {value}. An empty connection will be returned.");
                         return FishNet.Managing.NetworkManager.EmptyConnection;
                     }
                 }
@@ -953,9 +1023,12 @@ namespace FishNet.Serializing
                     //Try client side dictionary.
                     else if (NetworkManager.ClientManager.Clients.TryGetValueIL2CPP(value, out NetworkConnection result))
                         return result;
-                    //Otherwise return a new connection.
+                    /* Otherwise make a new instance.
+                    * We do not know if this is for the server or client so
+                    * initialize it either way. Connections rarely come through
+                    * without being in server/client side collection. */
                     else
-                        return new NetworkConnection(NetworkManager, value); //todo make and use NC cache.
+                        return new NetworkConnection(NetworkManager, value, true);
                 }
 
             }
@@ -973,14 +1046,12 @@ namespace FishNet.Serializing
             * than what bytes are available. */
             if (size < -1)
             {
-                if (NetworkManager.CanLog(LoggingType.Error))
-                    Debug.LogError($"Size of {size} is invalid.");
+                NetworkManager.LogError($"Size of {size} is invalid.");
                 return false;
             }
             if (size > Remaining)
             {
-                if (NetworkManager.CanLog(LoggingType.Error))
-                    Debug.LogError($"Read size of {size} is larger than remaining data of {Remaining}.");
+                NetworkManager.LogError($"Read size of {size} is larger than remaining data of {Remaining}.");
                 return false;
             }
 
@@ -1056,11 +1127,110 @@ namespace FishNet.Serializing
 
         #region Generators.
         /// <summary>
-        /// Reads a list.
+        /// Reads a replicate into collection and returns item count read.
         /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <returns></returns>
         [CodegenExclude]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal int ReadReplicate<T>(ref T[] collection, uint tick) where T : IReplicateData
+        {
+            //Number of entries written.
+            int count = (int)ReadByte();
+            if (collection == null || collection.Length < count)
+                collection = new T[count];
+
+            /* Subtract count total minus 1
+             * from starting tick. This sets the tick to what the first entry would be.
+             * EG packet came in as tick 100, so that was passed as tick.
+             * if there are 3 replicates then 2 would be subtracted (count - 1).
+             * The new tick would be 98.
+             * Ticks would be assigned to read values from oldest to 
+             * newest as 98, 99, 100. Which is the correct result. In order for this to
+             * work properly past replicates cannot skip ticks. This will be ensured
+             * in another part of the code. */
+            tick -= (uint)(count - 1);
+
+            int fullPackType = ReadByte();
+            //Read once and apply to all entries.
+            if (fullPackType > 0)
+            {
+                T value;
+                if (fullPackType == Writer.REPLICATE_ALL_DEFAULT_BYTE)
+                {
+                    value = default(T);
+                }
+                else if (fullPackType == Writer.REPLICATE_REPEATING_BYTE)
+                {
+                    value = Read<T>();
+                }
+                else
+                {
+                    value = default(T);
+                    NetworkManager?.LogError($"Unhandled Replicate pack type {fullPackType}.");
+                }
+
+                for (int i = 0; i < count; i++)
+                {
+                    collection[i] = value;
+                    collection[i].SetTick(tick + (uint)i);
+                }
+            }
+            //Values vary, read each indicator.
+            else
+            {
+                T lastData = default;
+
+                for (int i = 0; i < count; i++)
+                {
+                    T value = default;
+                    byte indicatorB = ReadByte();
+                    if (indicatorB == Writer.REPLICATE_DUPLICATE_BYTE)
+                    {
+                        value = lastData;
+                    }
+                    else if (indicatorB == Writer.REPLICATE_UNIQUE_BYTE)
+                    {
+                        value = Read<T>();
+                        lastData = value;
+                    }
+                    else if (indicatorB == Writer.REPLICATE_DEFAULT_BYTE)
+                    {
+                        value = default(T);
+                    }
+
+                    //Apply tick.
+                    value.SetTick(tick + (uint)i);
+                    //Assign to collection.
+                    collection[i] = value;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>
+        /// Reads a ListCache with allocations.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ListCache<T> ReadListCacheAllocated<T>()
+        {
+            List<T> lst = ReadListAllocated<T>();
+            ListCache<T> lc = new ListCache<T>();
+            lc.Collection = lst;
+            return lc;
+        }
+        /// <summary>
+        /// Reads a ListCache and returns the item count read.
+        /// </summary>
+        [CodegenExclude]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int ReadListCache<T>(ref ListCache<T> listCache)
+        {
+            listCache.Collection = ReadListAllocated<T>();
+            return listCache.Collection.Count;
+        }
+        /// <summary>
+        /// Reads a list with allocations.
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public List<T> ReadListAllocated<T>()
         {
@@ -1068,8 +1238,9 @@ namespace FishNet.Serializing
             ReadList<T>(ref result);
             return result;
         }
+
         /// <summary>
-        /// Reads into collection and returns amount read.
+        /// Reads into collection and returns item count read.
         /// </summary>
         /// <param name="collection"></param>
         /// <param name="allowNullification">True to allow the referenced collection to be nullified when receiving a null collection read.</param>
@@ -1091,6 +1262,7 @@ namespace FishNet.Serializing
                     collection = new List<T>(count);
                 else
                     collection.Clear();
+
 
                 for (int i = 0; i < count; i++)
                     collection.Add(Read<T>());
@@ -1153,21 +1325,21 @@ namespace FishNet.Serializing
         /// </summary>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
+        [CodegenExclude]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public T Read<T>()
         {
             if (IsAutoPackType<T>(out AutoPackType packType))
             {
-                Func<Reader, AutoPackType, T> del = GenericReader<T>.ReadAutoPack;
-                if (del == null)
+                Func<Reader, AutoPackType, T> autopackDel = GenericReader<T>.ReadAutoPack;
+                if (autopackDel == null)
                 {
-                    if (NetworkManager.CanLog(LoggingType.Error))
-                        Debug.LogError($"Read method not found for {typeof(T).Name}. Use a supported type or create a custom serializer.");
+                    NetworkManager.LogError($"Read method not found for {typeof(T).Name}. Use a supported type or create a custom serializer.");
                     return default;
                 }
                 else
                 {
-                    return del.Invoke(this, packType);
+                    return autopackDel.Invoke(this, packType);
                 }
             }
             else
@@ -1175,8 +1347,7 @@ namespace FishNet.Serializing
                 Func<Reader, T> del = GenericReader<T>.Read;
                 if (del == null)
                 {
-                    if (NetworkManager.CanLog(LoggingType.Error))
-                        Debug.LogError($"Read method not found for {typeof(T).Name}. Use a supported type or create a custom serializer.");
+                    NetworkManager.LogError($"Read method not found for {typeof(T).Name}. Use a supported type or create a custom serializer.");
                     return default;
                 }
                 else
