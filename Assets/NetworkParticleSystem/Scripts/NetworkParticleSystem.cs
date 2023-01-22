@@ -55,6 +55,7 @@ namespace gooby.NetworkParticleSystem
             "You probably want this on unless you are handling collisions on the client.")]
         [SerializeField] private bool _syncAllParticles = false;
         private int _particleCount;
+        public int ParticleCount => _particleCount;
 
         /// <summary>
         /// Particle cache.
@@ -65,12 +66,6 @@ namespace gooby.NetworkParticleSystem
         /// Extra particle cache in case particles are modified, we can detect changes.
         /// </summary>
         private Particle[] _particleCache;
-
-        [SyncObject]
-        private readonly SyncDictionary<int, NetParticle> _changedParticles = new SyncDictionary<int, NetParticle>();
-
-        private readonly Dictionary<int, Particle> _livingParticles = new Dictionary<int, Particle>();
-        public Dictionary<int, Particle> LivingParticles => _livingParticles;
 
         /// <summary>
         /// Particle system custom data cache.
@@ -122,7 +117,7 @@ namespace gooby.NetworkParticleSystem
             base.OnStopNetwork();
 
             if (TimeManager!=null)
-                TimeManager.OnLateUpdate += TimeManager_OnLateUpdate;
+                TimeManager.OnLateUpdate -= TimeManager_OnLateUpdate;
         }
 
         private void TimeManager_OnLateUpdate()
@@ -138,13 +133,13 @@ namespace gooby.NetworkParticleSystem
                     for (int i = 0; i < _particleCount; i++)
                     {
                         // particle born
-                        if (_customData[i].x == 0)
+                        if ((int)_customData[i].x == 0)
                         {
                             int id = GetUniqueID();
                             _customData[i] = new Vector4(id, 0, 0, 0);
 
                             if (_logLevel >= LoggingType.Common)
-                                Debug.Log($"Particle BORN, index {i}, NEW ID: {_customData[i].x}");
+                                Debug.Log($"Particle BORN, index {i}, NEW ID: {id}");
 
 #pragma warning disable 0618
                             RpcEmit(_particles[i].position, _particles[i].velocity,
@@ -152,7 +147,6 @@ namespace gooby.NetworkParticleSystem
                                 id);
 #pragma warning restore 0618
 
-                            _livingParticles.Add(id, _particles[i]);
                             OnParticleBirth?.Invoke(i);
                         }
                         // particle died
@@ -160,11 +154,11 @@ namespace gooby.NetworkParticleSystem
                         {
                             OnParticleDeath?.Invoke(i);
 
-                            if (_logLevel >= LoggingType.Common)
-                                Debug.Log($"Particle DEAD, index {i} ID: {_customData[i].x}");
-
                             int particleId = (int)_customData[i].x;
-                            _livingParticles.Remove(particleId);
+
+                            if (_logLevel >= LoggingType.Common)
+                                Debug.Log($"Particle DEAD, index {i} ID: {particleId}");
+
                             RpcKill(particleId);
                             _customData[i] = Vector4.zero;
                         }
@@ -173,32 +167,32 @@ namespace gooby.NetworkParticleSystem
                     }
 
                     SetParticleData();
-                    _changedParticles.Clear();
                 }
             }
         }
 
         private void DetectParticleChanges(int i)
         {
+            // dead particle already handled
+            if ((int)_customData[i].x == 0) return;
+
             NetParticle netParticle = new NetParticle();
 
             if (_particles[i].position != _particleCache[i].position)
             {
                 netParticle.Position = _particles[i].position;
-                Debug.Log("Particle pos changed ");
+                netParticle.Id = (int)_customData[i].x;
             }
 
             if (_particles[i].velocity != _particleCache[i].velocity)
             {
                 netParticle.Velocity = _particles[i].velocity;
-                Debug.Log("Particle vel changed "+netParticle.Velocity);
+                netParticle.Position = _particles[i].position;
+                netParticle.Id = (int)_customData[i].x;
             }
 
-            if (!netParticle.Equals(default))
+            if (netParticle.Id != 0)
             {
-                netParticle.Id = (int)_customData[i].x;
-                // multiple same keys, value 0, maybe after kill
-                _changedParticles.Add(netParticle.Id, netParticle);
             }
         }
 
@@ -407,8 +401,12 @@ namespace gooby.NetworkParticleSystem
         public int GetParticleData()
         {
             _particleCount = _particleSystem.GetParticles(_particles);
-            _particleCache = _particles;
             _particleSystem.GetCustomParticleData(_customData, ParticleSystemCustomData.Custom2);
+
+            // copy to cache we can use for comparisons
+            _particleCache = new Particle[_particleCount];
+            for (int i = 0; i < _particleCount; i++)
+                _particleCache[i] = _particles[i];
 
             return _particleCount;
         }

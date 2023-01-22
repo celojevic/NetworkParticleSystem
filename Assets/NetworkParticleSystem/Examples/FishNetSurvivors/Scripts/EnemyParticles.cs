@@ -37,18 +37,20 @@ namespace gooby.NetworkParticleSystem.Examples.FishNetSurvivors
         {
             _nps.OnParticleBirth.AddListener(OnParticleBorn);
             _nps.OnParticleDeath.AddListener(OnParticleDeath);
-            _nps.OnParticleUpdate.AddListener(OnPreParticleUpdate);
+            _nps.OnParticleUpdate.AddListener(OnParticleUpdate);
 
             StartCoroutine(SpawnEnemies());
         }
 
-        private void OnPreParticleUpdate()
+        private void OnParticleUpdate()
         {
-            // TODO this loops thru all 100 particles, not the living ones
-            for (int i = 0; i < _nps.Particles.Length; i++)
+            if (_player == null) return;
+
+            for (int i = 0; i < _nps.ParticleCount; i++)
             {
                 var particle = _nps.Particles[i];
-                particle.velocity = (_player.transform.position - particle.position).normalized * _moveSpeed;
+                //particle.velocity = (_player.transform.position - particle.position).normalized * _moveSpeed;
+                particle.position += (_player.transform.position - particle.position).normalized * _moveSpeed * Time.deltaTime;
                 _nps.Particles[i] = particle;
             }
         }
