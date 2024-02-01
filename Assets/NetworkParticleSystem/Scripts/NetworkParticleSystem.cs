@@ -73,8 +73,7 @@ namespace gooby.NetworkParticleSystem
         private List<Vector4> _customData = new List<Vector4>();
         public List<Vector4> CustomData => _customData;
 
-        [SyncVar(OnChange = nameof(OnSyncDataChanged))]
-        private ParticleSyncData _psSyncData;
+        private readonly SyncVar<ParticleSyncData> _psSyncData = new();
         private void OnSyncDataChanged(ParticleSyncData prev, ParticleSyncData cur, bool asServer)
         {
             if (asServer || IsHost) return;
@@ -103,6 +102,13 @@ namespace gooby.NetworkParticleSystem
         private void Awake()
         {
             _particles = new Particle[_particleSystem.main.maxParticles];
+
+            _psSyncData.OnChange += OnSyncDataChanged;
+        }
+
+        private void OnDestroy()
+        {
+            _psSyncData.OnChange -= OnSyncDataChanged;
         }
 
         public override void OnStartNetwork()
@@ -207,7 +213,7 @@ namespace gooby.NetworkParticleSystem
 
             if (_syncSeed)
             {
-                _psSyncData = new ParticleSyncData()
+                _psSyncData.Value = new ParticleSyncData
                 {
                     Seed = _particleSystem.randomSeed,
                     Time = _particleSystem.time,
